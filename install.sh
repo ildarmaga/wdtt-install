@@ -159,14 +159,21 @@ clone_or_update() {
   return 1
 }
 
+# Последний GitHub Release (не привязан к версии install.sh — всегда releases/latest).
+WDTT_RELEASE_TAG=""
+
 download_release_binary() {
   local repo="$1" name="$2" dest="$3"
-  local api url
+  local api json tag url
   api="https://api.github.com/repos/${repo}/releases/latest"
-  url="$(curl -fsSL "$api" | grep -oE "https://[^\"]+${name}[^\"]*linux-${ARCH}[^\"]*" | head -1 || true)"
+  json="$(curl -fsSL "$api" 2>/dev/null)" || return 1
+  tag="$(echo "$json" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1 || true)"
+  url="$(echo "$json" | grep -oE "https://[^\"]+${name}[^\"]*linux-${ARCH}[^\"]*" | head -1 || true)"
   [[ -n "$url" ]] || return 1
   curl -fsSL "$url" -o "$dest"
   chmod +x "$dest"
+  [[ -n "$tag" ]] && WDTT_RELEASE_TAG="$tag"
+  return 0
 }
 
 build_server() {
@@ -176,12 +183,12 @@ build_server() {
   if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-server" "/tmp/wdtt-server-dl" 2>/dev/null; then
     install -m 0755 /tmp/wdtt-server-dl /usr/local/bin/wdtt-server
     rm -f /tmp/wdtt-server-dl
-    info "wdtt-server скачан из GitHub Releases"
+    info "wdtt-server скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
     return
   fi
   command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Установите golang или создайте Release"; exit 1; }
-  CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="-s -w" -o /usr/local/bin/wdtt-server "${src}/server.go"
-  info "wdtt-server собран из исходников"
+  (cd "$src" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="-s -w" -o /usr/local/bin/wdtt-server .)
+  info "wdtt-server собран из исходников (fallback)"
 }
 
 build_panel() {
@@ -193,12 +200,12 @@ build_panel() {
   if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-panel" "/tmp/wdtt-panel-dl" 2>/dev/null; then
     install -m 0755 /tmp/wdtt-panel-dl /usr/local/bin/wdtt-panel
     rm -f /tmp/wdtt-panel-dl
-    info "wdtt-panel скачан из GitHub Releases"
+    info "wdtt-panel скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
     return
   fi
   command -v go >/dev/null || { err "Нет Go для сборки панели"; exit 1; }
-  (cd "$panel_src" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/wdtt-panel .)
-  info "wdtt-panel собран из исходников (panel/)"
+  (cd "$panel_src" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="-s -w" -o /usr/local/bin/wdtt-panel .)
+  info "wdtt-panel собран из исходников (fallback)"
 }
 
 write_passwords_json() {
