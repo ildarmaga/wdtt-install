@@ -78,6 +78,11 @@ install_deps() {
     dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc unzip wget ;;
     pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc unzip wget ;;
   esac
+  if command -v tc >/dev/null 2>&1; then
+    info "tc (iproute2) — лимиты скорости VPN доступны"
+  else
+    warn "tc не найден — лимиты скорости пользователей работать не будут"
+  fi
   if ! command -v go >/dev/null 2>&1; then
     case "$PKG_MGR" in
       apt) pkg_install golang-go 2>/dev/null || true ;;
