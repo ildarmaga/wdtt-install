@@ -51,7 +51,7 @@ status | uninstall
 
 Нужны два репозитория на GitHub:
 
-1. [wdtt](https://github.com/amurcanov/wdtt) — сервер (`server.go`) + панель (`panel/`)
+1. [wdtt](https://github.com/ildarmaga/wdtt) — сервер (`server.go`) + панель (`panel/`)
 2. **wdtt-install** — этот репозиторий (установщик)
 
 Установщик клонирует `wdtt` один раз и собирает сервер и панель из одного репозитория.
