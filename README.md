@@ -2,6 +2,8 @@
 
 Установщик WDTT VPN + Xray + веб-панель в одну строку (как [3x-ui](https://github.com/MHSanaei/3x-ui)).
 
+VPN-протокол основан на [proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) ([amurcanov](https://github.com/amurcanov)); сервер и панель — [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt).
+
 ## Быстрая установка
 
 Замените `YOUR_GITHUB_USER` на ваш GitHub-логин:

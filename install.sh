@@ -282,7 +282,7 @@ install_xray_rules() {
 Description=WDTT Xray routing (wdtt0 -> xray)
 After=wdtt.service network-online.target
 Requires=wdtt.service
-PartOf=wdtt.service
+BindsTo=wdtt.service
 
 [Service]
 Type=simple
