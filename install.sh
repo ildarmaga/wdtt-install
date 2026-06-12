@@ -93,6 +93,12 @@ install_deps() {
 
 script_dir() {
   local src="${BASH_SOURCE[0]}"
+  case "$src" in
+    /dev/fd/*|/proc/*/fd/*)
+      echo "$INSTALL_DIR"
+      return 0
+      ;;
+  esac
   while [ -L "$src" ]; do
     local dir
     dir="$(cd -P "$(dirname "$src")" && pwd)"
@@ -102,7 +108,29 @@ script_dir() {
   cd -P "$(dirname "$src")" && pwd
 }
 
-TEMPLATES_DIR="$(script_dir)/templates"
+is_piped_install() {
+  case "${BASH_SOURCE[0]}" in
+    /dev/fd/*|/proc/*/fd/*) return 0 ;;
+  esac
+  return 1
+}
+
+TEMPLATES_DIR="${INSTALL_DIR}/templates"
+
+ensure_install_tree() {
+  mkdir -p "$INSTALL_DIR" "$BUILD_DIR"
+  if [[ -f "${TEMPLATES_DIR}/xray-config.json" && -f "${TEMPLATES_DIR}/wdtt-cli.sh" ]]; then
+    return 0
+  fi
+  if is_piped_install; then
+    step "Загрузка wdtt-install (шаблоны)..."
+    clone_or_update "$REPO_INSTALL" "$INSTALL_DIR" ""
+  else
+    local dir; dir="$(script_dir)"
+    cp -a "${dir}/." "$INSTALL_DIR/"
+  fi
+  [[ -f "${TEMPLATES_DIR}/xray-config.json" ]] || { err "Шаблоны не найдены в ${TEMPLATES_DIR}"; exit 1; }
+}
 
 detect_wan() {
   ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1
@@ -458,7 +486,7 @@ fi
 
 detect_os
 install_deps
-mkdir -p "$INSTALL_DIR" "$BUILD_DIR"
+ensure_install_tree
 setup_sysctl
 setup_firewall
 build_server
@@ -476,9 +504,8 @@ if [[ "$WITH_PANEL" == "1" ]]; then
   install_panel_service
 fi
 
-# Сохраняем установщик для wdtt uninstall / update
-mkdir -p "$INSTALL_DIR"
-cp -a "$(script_dir)/." "$INSTALL_DIR/"
+# CLI и копия install.sh для wdtt update/uninstall
+ensure_install_tree
 chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/templates/wdtt-cli.sh" 2>/dev/null || true
 install -m 0755 "$INSTALL_DIR/templates/wdtt-cli.sh" /usr/local/bin/wdtt
 
