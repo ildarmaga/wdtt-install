@@ -289,12 +289,14 @@ install_xray_binary() {
   tag="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)"
   [[ -n "$tag" ]] || tag="v26.4.25"
   url="https://github.com/XTLS/Xray-core/releases/download/${tag}/${arch_zip}"
-  tmpdir="$(mktemp -d)"
-  zipfile="$(mktemp)"
-  trap 'rm -rf "$tmpdir" "$zipfile"' RETURN
+  tmpdir="$(mktemp -d /tmp/wdtt-xray.XXXXXX)" || { err "не удалось создать временный каталог"; return 1; }
+  zipfile="${tmpdir}/xray.zip"
+  extract="${tmpdir}/extract"
+  trap 'rm -rf "$tmpdir"' RETURN
   curl -fsSL "$url" -o "$zipfile"
-  unzip -oq "$zipfile" -d "$tmpdir"
-  xray_bin="$(find "$tmpdir" -name xray -type f | head -1)"
+  mkdir -p "$extract"
+  unzip -oq "$zipfile" -d "$extract" || { err "распаковка ${arch_zip} не удалась (проверьте unzip и место в /tmp)"; return 1; }
+  xray_bin="$(find "$extract" -name xray -type f | head -1)"
   [[ -n "$xray_bin" ]] || { err "xray binary not found in ${arch_zip}"; return 1; }
   install -m 0755 "$xray_bin" "${XRAY_BIN_DIR}/xray-linux-amd64"
   curl -fsSL -o "${XRAY_BIN_DIR}/geoip.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
