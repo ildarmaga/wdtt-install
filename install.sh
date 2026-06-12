@@ -279,7 +279,7 @@ EOF
 install_xray_binary() {
   step "Установка Xray-core..."
   mkdir -p "$XRAY_BIN_DIR" "$XRAY_LOG_DIR" "$XRAY_CONFIG_DIR"
-  local zip arch_zip url tmp
+  local zip arch_zip url tmpdir zipfile xray_bin
   case "$ARCH" in
     amd64) arch_zip="Xray-linux-64.zip" ;;
     arm64) arch_zip="Xray-linux-arm64-v8a.zip" ;;
@@ -289,11 +289,14 @@ install_xray_binary() {
   tag="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)"
   [[ -n "$tag" ]] || tag="v26.4.25"
   url="https://github.com/XTLS/Xray-core/releases/download/${tag}/${arch_zip}"
-  tmp="$(mktemp)"
-  curl -fsSL "$url" -o "${tmp}.zip"
-  unzip -oq "${tmp}.zip" -d "$tmp"
-  install -m 0755 "$(find "$tmp" -name xray -type f | head -1)" "${XRAY_BIN_DIR}/xray-linux-amd64"
-  rm -rf "$tmp" "${tmp}.zip"
+  tmpdir="$(mktemp -d)"
+  zipfile="$(mktemp)"
+  trap 'rm -rf "$tmpdir" "$zipfile"' RETURN
+  curl -fsSL "$url" -o "$zipfile"
+  unzip -oq "$zipfile" -d "$tmpdir"
+  xray_bin="$(find "$tmpdir" -name xray -type f | head -1)"
+  [[ -n "$xray_bin" ]] || { err "xray binary not found in ${arch_zip}"; return 1; }
+  install -m 0755 "$xray_bin" "${XRAY_BIN_DIR}/xray-linux-amd64"
   curl -fsSL -o "${XRAY_BIN_DIR}/geoip.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
   curl -fsSL -o "${XRAY_BIN_DIR}/geosite.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
   info "Xray ${tag} установлен"
