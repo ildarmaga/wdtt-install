@@ -253,6 +253,33 @@ EOF
   chmod 600 "${CONFIG_DIR}/passwords.json"
 }
 
+write_inbound_json() {
+  mkdir -p "$CONFIG_DIR"
+  if [[ -f "${CONFIG_DIR}/inbound.json" ]]; then
+    warn "inbound.json уже есть — не перезаписываю"
+    return
+  fi
+  cat > "${CONFIG_DIR}/inbound.json" <<EOF
+{
+  "tag": "wdtt-in",
+  "remark": "WDTT",
+  "enable": true,
+  "listen_host": "0.0.0.0",
+  "dtls_port": ${DTLS_PORT},
+  "wg_port": ${WG_PORT},
+  "client_port": 9000,
+  "dns": "1.1.1.1",
+  "mtu": 1280,
+  "max_users": 10,
+  "handshake_timeout_sec": 30,
+  "max_dtls_per_device": 0,
+  "admin_addr": "127.0.0.1:2861"
+}
+EOF
+  chmod 600 "${CONFIG_DIR}/inbound.json"
+  info "inbound.json создан — WDTT виден в панели «Подключения»"
+}
+
 install_wdtt_service() {
   local pass="$1"
   cat > /etc/systemd/system/wdtt.service <<EOF
@@ -352,6 +379,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
 ExecStart=/usr/local/bin/wdtt-panel
 Restart=on-failure
 RestartSec=5
@@ -497,6 +525,7 @@ setup_firewall
 build_server
 write_passwords_json "$WDTT_PASSWORD"
 install_wdtt_service "$WDTT_PASSWORD"
+write_inbound_json
 
 if [[ "$WITH_XRAY" == "1" ]]; then
   install_xray_binary
