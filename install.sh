@@ -236,50 +236,6 @@ build_panel() {
   info "wdtt-panel собран из исходников (fallback)"
 }
 
-write_passwords_json() {
-  local pass="$1"
-  mkdir -p "$CONFIG_DIR"
-  if [[ -f "${CONFIG_DIR}/passwords.json" ]]; then
-    warn "passwords.json уже есть — не перезаписываю"
-    return
-  fi
-  cat > "${CONFIG_DIR}/passwords.json" <<EOF
-{
-  "main_password": "${pass}",
-  "passwords": {},
-  "devices": {}
-}
-EOF
-  chmod 600 "${CONFIG_DIR}/passwords.json"
-}
-
-write_inbound_json() {
-  mkdir -p "$CONFIG_DIR"
-  if [[ -f "${CONFIG_DIR}/inbound.json" ]]; then
-    warn "inbound.json уже есть — не перезаписываю"
-    return
-  fi
-  cat > "${CONFIG_DIR}/inbound.json" <<EOF
-{
-  "tag": "wdtt-in",
-  "remark": "WDTT",
-  "enable": true,
-  "listen_host": "0.0.0.0",
-  "dtls_port": ${DTLS_PORT},
-  "wg_port": ${WG_PORT},
-  "client_port": 9000,
-  "dns": "1.1.1.1",
-  "mtu": 1280,
-  "max_users": 10,
-  "handshake_timeout_sec": 30,
-  "max_dtls_per_device": 0,
-  "admin_addr": "127.0.0.1:2861"
-}
-EOF
-  chmod 600 "${CONFIG_DIR}/inbound.json"
-  info "inbound.json создан — WDTT виден в панели «Подключения»"
-}
-
 install_wdtt_service() {
   local pass="$1"
   cat > /etc/systemd/system/wdtt.service <<EOF
@@ -523,9 +479,17 @@ ensure_install_tree
 setup_sysctl
 setup_firewall
 build_server
-write_passwords_json "$WDTT_PASSWORD"
+mkdir -p "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+
+if [[ "$WITH_PANEL" == "1" ]]; then
+  build_panel
+  install_panel_service
+  systemctl start wdtt-panel.service 2>/dev/null || true
+  sleep 2
+fi
+
 install_wdtt_service "$WDTT_PASSWORD"
-write_inbound_json
 
 if [[ "$WITH_XRAY" == "1" ]]; then
   install_xray_binary
@@ -533,9 +497,8 @@ if [[ "$WITH_XRAY" == "1" ]]; then
   install_xray_rules
 fi
 
-if [[ "$WITH_PANEL" == "1" ]]; then
-  build_panel
-  install_panel_service
+if [[ "$WITH_PANEL" != "1" ]]; then
+  warn "Без панели конфиги не создаются — рекомендуется --panel"
 fi
 
 # CLI и копия install.sh для wdtt update/uninstall
