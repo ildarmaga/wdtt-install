@@ -10,7 +10,7 @@ VPN-протокол основан на [proxy-turn-vk-android](https://github.
 bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
 ```
 
-При запуске по SSH откроется **интерактивное меню** (установка / обновление / статус / удаление).
+При запуске по SSH откроется **интерактивное меню** с навигацией **↑↓ / WASD**, Enter и цифрами.
 
 Явно без меню (авто-режим):
 
