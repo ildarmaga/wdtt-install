@@ -150,6 +150,7 @@ ui_read_nav_key() {
     echo "enter"
     return
   fi
+  if [[ "$key" == $'\x1b' ]]; then
     IFS= read -rsn2 -t 0.05 seq 2>/dev/null || true
     case "$seq" in
       '[A') echo "up"; return ;;
