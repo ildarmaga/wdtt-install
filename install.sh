@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.0"
+INSTALLER_VERSION="1.3.1"
 LOG_FILE="/var/log/wdtt-install.log"
 INSTALL_DIR="${WDTT_INSTALL_DIR:-/usr/local/wdtt}"
 BUILD_DIR="${INSTALL_DIR}/src"
@@ -32,9 +32,38 @@ IPT_COMMENT="WDTT_MANAGED"
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; blue='\033[0;34m'
 cyan='\033[0;36m'; magenta='\033[0;35m'; bold='\033[1m'; dim='\033[2m'; plain='\033[0m'
 
+ui_init_dims() {
+  [[ -n "${UI_DIMS_INIT:-}" ]] && return
+  UI_DIMS_INIT=1
+  local cols="${COLUMNS:-80}"
+  UI_W=52
+  (( cols < UI_W )) && UI_W=$(( cols > 42 ? cols : 42 ))
+  (( cols >= 70 )) && UI_W=58
+  UI_INNER=$(( UI_W - 2 ))
+  UI_LABEL_W=14
+  UI_VALUE_W=$(( UI_INNER - UI_LABEL_W - 3 ))
+  (( UI_VALUE_W < 12 )) && UI_VALUE_W=12
+}
+
+ui_hline() {
+  local w="$1"
+  printf '%*s' "$w" '' | tr ' ' '─'
+}
+
+ui_pad_right() {
+  local s="$1" w="$2"
+  local n=${#s}
+  if (( n >= w )); then
+    echo "${s:0:w-1}…"
+    return
+  fi
+  printf '%s%*s' "$s" $((w - n)) ''
+}
+
 ui_clear() { clear 2>/dev/null || printf '\033[H\033[J'; }
 
 ui_banner() {
+  ui_init_dims
   echo -e "${cyan}${bold}"
   cat <<'BANNER'
  __      __ ____ _____ _____
@@ -44,49 +73,48 @@ ui_banner() {
     \__/   |____/ |_|   |_|
 BANNER
   echo -e "${plain}${dim}  VPN · Xray · Panel  │  installer v${INSTALLER_VERSION}${plain}"
-  echo -e "${dim}  ─────────────────────────────────────────────────${plain}"
+  echo -e "${dim}  $(ui_hline "$((UI_W - 2))")${plain}"
   echo ""
 }
 
 ui_line() {
-  echo -e "${blue}────────────────────────────────────────────────────────────${plain}"
+  ui_init_dims
+  echo -e "${blue}$(ui_hline "$UI_W")${plain}"
 }
 
 ui_box_top() {
-  echo -e "${blue}┌──────────────────────────────────────────────────────────┐${plain}"
+  ui_init_dims
+  echo -e "${blue}┌$(ui_hline "$UI_INNER")┐${plain}"
 }
 
 ui_box_bot() {
-  echo -e "${blue}└──────────────────────────────────────────────────────────┘${plain}"
+  ui_init_dims
+  echo -e "${blue}└$(ui_hline "$UI_INNER")┘${plain}"
 }
 
 ui_box_title() {
-  printf "${blue}│${plain} ${bold}%-56s${plain} ${blue}│${plain}\n" "$1"
+  ui_init_dims
+  local padded
+  padded="$(ui_pad_right " $1" "$UI_INNER")"
+  printf "${blue}│${plain}${bold}%s${plain}${blue}│${plain}\n" "$padded"
 }
 
 ui_box_row() {
+  ui_init_dims
   local label="$1" value="$2"
-  local v
-  v="$(ui_fit "$value" 36)"
-  printf "${blue}│${plain}  ${dim}%-16s${plain} ${green}%s${plain}${blue}│${plain}\n" "$label" "$v"
+  local lp vp
+  lp="$(ui_pad_right "$label" "$UI_LABEL_W")"
+  vp="$(ui_pad_right "$value" "$UI_VALUE_W")"
+  printf "${blue}│${plain}  ${dim}%s${plain} ${green}%s${plain}${blue}│${plain}\n" "$lp" "$vp"
 }
 
 ui_box_row_warn() {
+  ui_init_dims
   local label="$1" value="$2"
-  local v
-  v="$(ui_fit "$value" 36)"
-  printf "${blue}│${plain}  ${dim}%-16s${plain} ${yellow}%s${plain}${blue}│${plain}\n" "$label" "$v"
-}
-
-# Обрезка текста под ширину рамки (без учёта ANSI)
-ui_fit() {
-  local s="$1" max="$2"
-  local plain="${#s}"
-  if (( plain > max )); then
-    echo "${s:0:max-1}…"
-  else
-    printf "%-${max}s" "$s"
-  fi
+  local lp vp
+  lp="$(ui_pad_right "$label" "$UI_LABEL_W")"
+  vp="$(ui_pad_right "$value" "$UI_VALUE_W")"
+  printf "${blue}│${plain}  ${dim}%s${plain} ${yellow}%s${plain}${blue}│${plain}\n" "$lp" "$vp"
 }
 
 ui_read_nav_key() {
@@ -111,11 +139,12 @@ ui_read_nav_key() {
 }
 
 # Интерактивное меню: ↑↓ / WASD, Enter, цифры, q — выход
-# UI_MENU_ITEMS[], UI_MENU_HINTS[], UI_MENU_SELECTED
+# UI_MENU_ITEMS[], UI_MENU_HINTS[], UI_MENU_SELECTED, UI_MENU_RESULT
 ui_menu_interact() {
   local count=${#UI_MENU_ITEMS[@]}
   (( count > 0 )) || return 1
   UI_MENU_SELECTED=0
+  UI_MENU_RESULT=""
 
   while true; do
     local i hint
@@ -149,7 +178,7 @@ ui_menu_interact() {
         continue
         ;;
       enter)
-        echo "$UI_MENU_SELECTED"
+        UI_MENU_RESULT="$UI_MENU_SELECTED"
         return 0
         ;;
       q|Q|esc)
@@ -157,7 +186,7 @@ ui_menu_interact() {
         ;;
       [0-9])
         if (( nav < count )); then
-          echo "$nav"
+          UI_MENU_RESULT="$nav"
           return 0
         fi
         ;;
@@ -644,8 +673,8 @@ run_interactive_menu() {
     fi
 
     show_main_menu
-    local choice
-    choice="$(ui_menu_interact)" || { echo -e "  ${dim}Выход.${plain}"; exit 0; }
+    ui_menu_interact || { echo -e "  ${dim}Выход.${plain}"; exit 0; }
+    choice="$UI_MENU_RESULT"
 
     if is_wdtt_installed; then
       case "$choice" in
