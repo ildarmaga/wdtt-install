@@ -3,24 +3,46 @@
 set -euo pipefail
 
 GITHUB_USER="${WDTT_GITHUB_USER:-ildarmaga}"
-INSTALLER_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/main/install.sh"
+REPO="https://github.com/${GITHUB_USER}/wdtt-install.git"
 LOCAL_INSTALLER="/usr/local/wdtt/install.sh"
+
+_fetch_installer_path() {
+  local dir tmp
+  dir="$(mktemp -d /tmp/wdtt-install.XXXXXX)"
+  if git clone --depth 1 --branch main "$REPO" "$dir" 2>/dev/null; then
+    echo "$dir/install.sh"
+    return 0
+  fi
+  rm -rf "$dir"
+  # fallback: raw по SHA (обходит CDN кэш ветки main)
+  local sha
+  sha="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USER}/wdtt-install/commits/main" 2>/dev/null \
+    | sed -n 's/.*"sha": "\([0-9a-f]\{40\}\)".*/\1/p' | head -1)"
+  if [[ -n "$sha" ]]; then
+    tmp="$(mktemp /tmp/wdtt-install.XXXXXX.sh)"
+    if curl -fsSL "https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/${sha}/install.sh" -o "$tmp" 2>/dev/null; then
+      chmod +x "$tmp"
+      echo "$tmp"
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
+  if [[ -f "$LOCAL_INSTALLER" ]]; then
+    echo "$LOCAL_INSTALLER"
+    return 0
+  fi
+  return 1
+}
 
 _run_installer() {
   local cmd="$1"
   shift || true
-  local tmp
-  tmp="$(mktemp /tmp/wdtt-install.XXXXXX.sh)"
-  if curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
-      "${INSTALLER_RAW}?t=${RANDOM}" -o "$tmp" 2>/dev/null; then
-    chmod +x "$tmp"
-    exec bash "$tmp" "$cmd" "$@"
-  fi
-  if [[ -f "$LOCAL_INSTALLER" ]]; then
-    exec bash "$LOCAL_INSTALLER" "$cmd" "$@"
-  fi
-  echo "Не удалось загрузить установщик с GitHub и нет ${LOCAL_INSTALLER}" >&2
-  exit 1
+  local script
+  script="$(_fetch_installer_path)" || {
+    echo "Не удалось загрузить установщик с GitHub" >&2
+    exit 1
+  }
+  exec bash "$script" "$cmd" "$@"
 }
 
 case "${1:-}" in

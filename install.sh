@@ -1129,11 +1129,11 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 WDTT Installer v${INSTALLER_VERSION}
 
-Установка в одну строку:
-  bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/main/install.sh)
+Установка (SHA обходит CDN-кэш GitHub):
+  SHA=\$(curl -fsSL https://api.github.com/repos/${GITHUB_USER}/wdtt-install/commits/main | sed -n 's/.*"sha": "\\([0-9a-f]\\{40\\}\\)".*/\\1/p' | head -1)
+  bash <(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/\${SHA}/install.sh")
 
-Интерактивное меню (SSH):
-  bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/main/install.sh) menu
+Меню: wdtt menu  (всегда свежий скрипт с GitHub)
 
 По умолчанию: пароль генерируется автоматически, xray + panel включаются сами.
 Если WDTT уже установлен — запускается обновление с выбором версии.

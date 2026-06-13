@@ -7,24 +7,26 @@ VPN-протокол основан на [proxy-turn-vk-android](https://github.
 ## Быстрая установка
 
 ```bash
-bash <(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
+SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/main | sed -n 's/.*"sha": "\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
+bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh")
 ```
 
-При запуске по SSH откроется **интерактивное меню** с навигацией **↑↓ / WASD**, Enter и цифрами. В шапке должно быть `installer v1.3.4` или новее.
+Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.3.4` или новее.
 
 Явно без меню (авто-режим):
 
 ```bash
-bash <(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install --no-menu
+SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/main | sed -n 's/.*"sha": "\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
+bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh") install --no-menu
 ```
 
 или:
 
 ```bash
-bash <(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) menu
+wdtt menu
 ```
 
-Команда `wdtt menu` тоже подтягивает **последний** install.sh с GitHub (не локальную копию).
+`wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (показывается в конце установки);
