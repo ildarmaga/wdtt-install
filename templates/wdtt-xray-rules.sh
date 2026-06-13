@@ -5,6 +5,8 @@ IFACE="wdtt0"
 XPORT="12345"
 DNS_IP="10.66.66.1"
 TUN_NET="10.66.66.0/24"
+PANEL_PORT="${PANEL_PORT:-2860}"
+SUB_PORT="${SUB_PORT:-2096}"
 WAN_IFACE="$(ip route get 8.8.8.8 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
 [ -z "$WAN_IFACE" ] && WAN_IFACE="eth0"
 TUN_MTU="$(cat /sys/class/net/${IFACE}/mtu 2>/dev/null)"
@@ -41,8 +43,10 @@ iptables -t nat -N XRAY_REDIRECT
 iptables -t nat -A XRAY_REDIRECT -d 10.66.66.0/24 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 127.0.0.0/8 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 255.255.255.255/32 -j RETURN
-# Трафик к самому серверу (панель, подписки, SSH и т.п.) не заворачиваем в xray,
-# иначе при подключённом VPN сервисы сервера становятся недоступны.
+# Панель и подписка — напрямую на сервер, не через xray (иначе таймаут при VPN)
+iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$PANEL_PORT" -j RETURN
+iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$SUB_PORT" -j RETURN
+# Трафик к локальным адресам сервера (SSH, сервисы на loopback после DNAT)
 iptables -t nat -A XRAY_REDIRECT -m addrtype --dst-type LOCAL -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p udp --dport 53 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p tcp -j REDIRECT --to-ports "$XPORT"

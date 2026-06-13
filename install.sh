@@ -405,9 +405,9 @@ pkg_install() {
 install_deps() {
   step "Установка зависимостей..."
   case "$PKG_MGR" in
-    apt) pkg_install ca-certificates curl git iproute2 iptables procps psmisc unzip wget ;;
-    dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc unzip wget ;;
-    pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc unzip wget ;;
+    apt) pkg_install ca-certificates curl git iproute2 iptables procps psmisc unzip wget wireguard-tools ;;
+    dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc unzip wget wireguard-tools ;;
+    pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc unzip wget wireguard-tools ;;
   esac
   if command -v tc >/dev/null 2>&1; then
     info "tc (iproute2) — лимиты скорости VPN доступны"
@@ -484,7 +484,10 @@ setup_firewall() {
   for rule in \
     "INPUT -p udp --dport $DTLS_PORT" \
     "INPUT -p udp --dport $WG_PORT" \
-    "INPUT -p tcp --dport $SSH_PORT"; do
+    "INPUT -p tcp --dport $SSH_PORT" \
+    "INPUT -p tcp --dport $PANEL_PORT" \
+    "INPUT -i $IFACE -p tcp --dport $PANEL_PORT" \
+    "INPUT -i $IFACE -p tcp --dport 2096"; do
     iptables -C $rule -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
       iptables -I $rule -m comment --comment "$IPT_COMMENT" -j ACCEPT
   done
@@ -914,6 +917,8 @@ BindsTo=wdtt.service
 [Service]
 Type=simple
 Environment=XRAY_LOCATION_ASSET=${XRAY_BIN_DIR}
+Environment=PANEL_PORT=${PANEL_PORT}
+Environment=SUB_PORT=2096
 ExecStartPre=/usr/bin/env bash -c 'for i in \$(seq 1 30); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && exit 0; sleep 0.5; done; exit 1'
 ExecStart=${XRAY_BIN_DIR}/xray-linux-amd64 run -c ${XRAY_CONFIG_DIR}/config.json
 ExecStartPost=/usr/bin/env bash -c 'sleep 1; /usr/local/bin/wdtt-xray-rules.sh up'
