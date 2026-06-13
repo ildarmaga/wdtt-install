@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.2"
+INSTALLER_VERSION="1.3.3"
 LOG_FILE="/var/log/wdtt-install.log"
 INSTALL_DIR="${WDTT_INSTALL_DIR:-/usr/local/wdtt}"
 BUILD_DIR="${INSTALL_DIR}/src"
@@ -161,6 +161,24 @@ ui_read_nav_key() {
   echo "$key"
 }
 
+# Рисует только список пунктов (без clear — для обновления на месте)
+ui_menu_draw_items() {
+  local i hint
+  for i in "${!UI_MENU_ITEMS[@]}"; do
+    hint="${UI_MENU_HINTS[$i]:-}"
+    if [[ "$i" -eq "$UI_MENU_SELECTED" ]]; then
+      printf "  ${cyan}${bold}▶ [%d] %-24s${plain}" "$i" "${UI_MENU_ITEMS[$i]}"
+    else
+      printf "    ${dim}[%d]${plain} %-24s" "$i" "${UI_MENU_ITEMS[$i]}"
+    fi
+    [[ -n "$hint" ]] && printf " ${dim}%s${plain}" "$hint"
+    printf '\033[K\n'
+  done
+  echo ""
+  echo -e "  ${dim}↑↓ / WASD · Enter · 0-9 · q — выход${plain}\033[K"
+  echo ""
+}
+
 # Интерактивное меню: ↑↓ / WASD, Enter, цифры, q — выход
 # UI_MENU_ITEMS[], UI_MENU_HINTS[], UI_MENU_SELECTED, UI_MENU_RESULT
 ui_menu_interact() {
@@ -168,37 +186,28 @@ ui_menu_interact() {
   (( count > 0 )) || return 1
   UI_MENU_SELECTED=0
   UI_MENU_RESULT=""
+  # строк на блок меню: пункты + пустая + подсказка + пустая
+  local menu_block_lines=$(( count + 3 ))
+
+  ui_menu_draw_items
 
   while true; do
-    local i hint
-    for i in "${!UI_MENU_ITEMS[@]}"; do
-      hint="${UI_MENU_HINTS[$i]:-}"
-      if [[ "$i" -eq "$UI_MENU_SELECTED" ]]; then
-        printf "  ${cyan}${bold}▶ [%d] %-24s${plain}" "$i" "${UI_MENU_ITEMS[$i]}"
-      else
-        printf "    ${dim}[%d]${plain} %-24s" "$i" "${UI_MENU_ITEMS[$i]}"
-      fi
-      [[ -n "$hint" ]] && printf " ${dim}%s${plain}" "$hint"
-      echo ""
-    done
-    echo ""
-    echo -e "  ${dim}↑↓ / WASD · Enter · 0-9 · q — выход${plain}"
-    echo ""
-
     local nav
     nav="$(ui_read_nav_key)"
     case "$nav" in
       up|w|W|k|K)
-        (( UI_MENU_SELECTED > 0 )) && ((UI_MENU_SELECTED--)) || true
-        ui_clear; ui_banner
-        ui_draw_menu_header
-        continue
+        if (( UI_MENU_SELECTED > 0 )); then
+          ((UI_MENU_SELECTED--))
+          printf '\033[%dA' "$menu_block_lines"
+          ui_menu_draw_items
+        fi
         ;;
       down|s|S|j|J)
-        (( UI_MENU_SELECTED < count - 1 )) && ((UI_MENU_SELECTED++)) || true
-        ui_clear; ui_banner
-        ui_draw_menu_header
-        continue
+        if (( UI_MENU_SELECTED < count - 1 )); then
+          ((UI_MENU_SELECTED++))
+          printf '\033[%dA' "$menu_block_lines"
+          ui_menu_draw_items
+        fi
         ;;
       enter)
         UI_MENU_RESULT="$UI_MENU_SELECTED"
