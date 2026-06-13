@@ -6,7 +6,9 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.3"
+INSTALLER_VERSION="1.3.4"
+# Не перезаписывать при . /etc/os-release
+readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
 INSTALL_DIR="${WDTT_INSTALL_DIR:-/usr/local/wdtt}"
 BUILD_DIR="${INSTALL_DIR}/src"
@@ -365,7 +367,16 @@ GOARCH="$ARCH"
 [[ "$ARCH" == "armv7" ]] && GOARCH=arm
 
 detect_os() {
-  if [[ -f /etc/os-release ]]; then . /etc/os-release; else err "Не удалось определить ОС"; exit 1; fi
+  local id pretty
+  if [[ -f /etc/os-release ]]; then
+    pretty="$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
+    id="$(grep -E '^ID=' /etc/os-release 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"')"
+    PRETTY_NAME="${pretty:-Linux}"
+    ID="${id:-unknown}"
+  else
+    err "Не удалось определить ОС"
+    exit 1
+  fi
   case "${ID:-}" in
     ubuntu|debian|linuxmint|pop) PKG_MGR=apt ;;
     centos|rhel|rocky|almalinux|fedora|oracle) PKG_MGR=dnf; command -v dnf >/dev/null || PKG_MGR=yum ;;

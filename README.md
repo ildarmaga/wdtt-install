@@ -7,22 +7,24 @@ VPN-протокол основан на [proxy-turn-vk-android](https://github.
 ## Быстрая установка
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
+bash <(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
 ```
 
-При запуске по SSH откроется **интерактивное меню** с навигацией **↑↓ / WASD**, Enter и цифрами.
+При запуске по SSH откроется **интерактивное меню** с навигацией **↑↓ / WASD**, Enter и цифрами. В шапке должно быть `installer v1.3.4` или новее.
 
 Явно без меню (авто-режим):
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install --no-menu
+bash <(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install --no-menu
 ```
 
 или:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) menu
+bash <(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) menu
 ```
+
+Команда `wdtt menu` тоже подтягивает **последний** install.sh с GitHub (не локальную копию).
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (показывается в конце установки);
