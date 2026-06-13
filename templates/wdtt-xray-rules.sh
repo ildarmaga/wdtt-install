@@ -34,6 +34,9 @@ iptables -t nat -N XRAY_REDIRECT
 iptables -t nat -A XRAY_REDIRECT -d 10.66.66.0/24 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 127.0.0.0/8 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 255.255.255.255/32 -j RETURN
+# Трафик к самому серверу (панель, подписки, SSH и т.п.) не заворачиваем в xray,
+# иначе при подключённом VPN сервисы сервера становятся недоступны.
+iptables -t nat -A XRAY_REDIRECT -m addrtype --dst-type LOCAL -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p udp --dport 53 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p tcp -j REDIRECT --to-ports "$XPORT"
 iptables -t nat -A PREROUTING -i "$IFACE" -j XRAY_REDIRECT
