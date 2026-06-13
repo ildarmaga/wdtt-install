@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-VERSION="1.2.0"
+INSTALLER_VERSION="1.3.0"
 LOG_FILE="/var/log/wdtt-install.log"
 INSTALL_DIR="${WDTT_INSTALL_DIR:-/usr/local/wdtt}"
 BUILD_DIR="${INSTALL_DIR}/src"
@@ -43,7 +43,7 @@ ui_banner() {
    \    /  | |_| || |   | |
     \__/   |____/ |_|   |_|
 BANNER
-  echo -e "${plain}${dim}  VPN · Xray · Panel  │  installer v${VERSION}${plain}"
+  echo -e "${plain}${dim}  VPN · Xray · Panel  │  installer v${INSTALLER_VERSION}${plain}"
   echo -e "${dim}  ─────────────────────────────────────────────────${plain}"
   echo ""
 }
@@ -65,11 +65,179 @@ ui_box_title() {
 }
 
 ui_box_row() {
-  printf "${blue}│${plain}  ${dim}%-18s${plain} ${green}%-35s${plain} ${blue}│${plain}\n" "$1" "$2"
+  local label="$1" value="$2"
+  local v
+  v="$(ui_fit "$value" 36)"
+  printf "${blue}│${plain}  ${dim}%-16s${plain} ${green}%s${plain}${blue}│${plain}\n" "$label" "$v"
 }
 
 ui_box_row_warn() {
-  printf "${blue}│${plain}  ${dim}%-18s${plain} ${yellow}%-35s${plain} ${blue}│${plain}\n" "$1" "$2"
+  local label="$1" value="$2"
+  local v
+  v="$(ui_fit "$value" 36)"
+  printf "${blue}│${plain}  ${dim}%-16s${plain} ${yellow}%s${plain}${blue}│${plain}\n" "$label" "$v"
+}
+
+# Обрезка текста под ширину рамки (без учёта ANSI)
+ui_fit() {
+  local s="$1" max="$2"
+  local plain="${#s}"
+  if (( plain > max )); then
+    echo "${s:0:max-1}…"
+  else
+    printf "%-${max}s" "$s"
+  fi
+}
+
+ui_read_nav_key() {
+  local key seq=""
+  IFS= read -rsn1 key 2>/dev/null || { echo "q"; return; }
+  if [[ "$key" == $'\x1b' ]]; then
+    IFS= read -rsn2 -t 0.05 seq 2>/dev/null || true
+    case "$seq" in
+      '[A') echo "up"; return ;;
+      '[B') echo "down"; return ;;
+      '[C') echo "right"; return ;;
+      '[D') echo "left"; return ;;
+    esac
+    echo "esc"
+    return
+  fi
+  case "$key" in
+    $'\n'|$'\r') echo "enter"; return ;;
+    '') echo "enter"; return ;;
+  esac
+  echo "$key"
+}
+
+# Интерактивное меню: ↑↓ / WASD, Enter, цифры, q — выход
+# UI_MENU_ITEMS[], UI_MENU_HINTS[], UI_MENU_SELECTED
+ui_menu_interact() {
+  local count=${#UI_MENU_ITEMS[@]}
+  (( count > 0 )) || return 1
+  UI_MENU_SELECTED=0
+
+  while true; do
+    local i hint
+    for i in "${!UI_MENU_ITEMS[@]}"; do
+      hint="${UI_MENU_HINTS[$i]:-}"
+      if [[ "$i" -eq "$UI_MENU_SELECTED" ]]; then
+        printf "  ${cyan}${bold}▶ [%d] %-24s${plain}" "$i" "${UI_MENU_ITEMS[$i]}"
+      else
+        printf "    ${dim}[%d]${plain} %-24s" "$i" "${UI_MENU_ITEMS[$i]}"
+      fi
+      [[ -n "$hint" ]] && printf " ${dim}%s${plain}" "$hint"
+      echo ""
+    done
+    echo ""
+    echo -e "  ${dim}↑↓ / WASD · Enter · 0-9 · q — выход${plain}"
+    echo ""
+
+    local nav
+    nav="$(ui_read_nav_key)"
+    case "$nav" in
+      up|w|W|k|K)
+        (( UI_MENU_SELECTED > 0 )) && ((UI_MENU_SELECTED--)) || true
+        ui_clear; ui_banner
+        ui_draw_menu_header
+        continue
+        ;;
+      down|s|S|j|J)
+        (( UI_MENU_SELECTED < count - 1 )) && ((UI_MENU_SELECTED++)) || true
+        ui_clear; ui_banner
+        ui_draw_menu_header
+        continue
+        ;;
+      enter)
+        echo "$UI_MENU_SELECTED"
+        return 0
+        ;;
+      q|Q|esc)
+        return 255
+        ;;
+      [0-9])
+        if (( nav < count )); then
+          echo "$nav"
+          return 0
+        fi
+        ;;
+    esac
+  done
+}
+
+ui_draw_menu_header() {
+  local os_name ver
+  os_name="${PRETTY_NAME:-Linux}"
+  ver="—"
+  is_wdtt_installed && ver="$(get_installed_version)"
+  ui_box_top
+  ui_box_title "Главное меню WDTT"
+  if is_wdtt_installed; then
+    ui_box_row "Статус" "Установлен"
+    ui_box_row "Версия" "$ver"
+  else
+    ui_box_row_warn "Статус" "Не установлен"
+  fi
+  ui_box_row "Система" "$os_name"
+  ui_box_row "Архитектура" "$ARCH"
+  ui_box_bot
+  echo ""
+  ui_line
+  echo ""
+}
+
+ui_show_help() {
+  ui_clear
+  ui_banner
+  ui_box_top
+  ui_box_title "Справка"
+  ui_box_bot
+  echo ""
+  ui_kv "Установка" "bash <(curl -Ls .../install.sh)"
+  ui_kv "Меню" "bash .../install.sh menu  или  wdtt menu"
+  ui_kv "Обновление" "wdtt update"
+  ui_kv "Статус" "wdtt status"
+  ui_kv "Логи" "wdtt log"
+  ui_kv "CLI" "wdtt restart | stop | start | uninstall"
+  echo ""
+  ui_kv "Опции" "--password, --direct, --no-panel"
+  ui_kv "Версия" "install update --version v1.2.4"
+  ui_kv "Авто" "install --no-menu"
+  echo ""
+  ui_press_enter
+}
+
+cmd_restart_services() {
+  step "Перезапуск сервисов..."
+  systemctl restart wdtt.service 2>/dev/null || warn "wdtt не запущен"
+  sleep 1
+  systemctl restart wdtt-xray.service 2>/dev/null || true
+  systemctl restart wdtt-panel.service 2>/dev/null || true
+  info "Сервисы перезапущены"
+}
+
+cmd_logs_tail() {
+  ui_box_top
+  ui_box_title "Последние логи (25 строк)"
+  ui_box_bot
+  echo ""
+  journalctl -u wdtt -u wdtt-xray -u wdtt-panel -n 25 --no-pager 2>/dev/null || warn "journalctl недоступен"
+  echo ""
+  ui_press_enter
+}
+
+ui_confirm() {
+  local prompt="$1"
+  local c
+  read -rp "$(echo -e "  ${yellow}⚠${plain} ${prompt} ${dim}[y/N]${plain}: ")" c
+  [[ "${c,,}" == "y" || "${c,,}" == "yes" || "${c,,}" == "д" || "${c,,}" == "да" ]]
+}
+
+ui_prompt_password() {
+  echo ""
+  read -rsp "$(echo -e "  ${cyan}▸${plain} VPN пароль: ")" WDTT_PASSWORD
+  echo ""
+  [[ -n "$WDTT_PASSWORD" ]]
 }
 
 ui_menu_opt() {
@@ -117,7 +285,7 @@ step_progress() {
 
 [[ $EUID -eq 0 ]] || { err "Запустите от root"; exit 1; }
 mkdir -p "$(dirname "$LOG_FILE")"
-echo "=== WDTT install v${VERSION} $(date) ===" >> "$LOG_FILE"
+echo "=== WDTT install v${INSTALLER_VERSION} $(date) ===" >> "$LOG_FILE"
 
 arch() {
   case "$(uname -m)" in
@@ -336,120 +504,176 @@ pick_release_version() {
     return 0
   fi
 
-  ui_clear
-  ui_banner
-  ui_box_top
-  ui_box_title "Обновление WDTT"
-  ui_box_bot
-  echo ""
-  ui_kv "Текущая" "${current}"
-  ui_kv "Latest" "${tags[0]}"
-  echo ""
-  ui_line
-  echo -e "  ${bold}Выберите версию:${plain}"
-  echo ""
-  i=1
-  for tag in "${tags[@]}"; do
-    mark=""
-    label="$tag"
-    [[ "$tag" == "$current" || "$tag" == "v${current}" ]] && mark="${green}● установлена${plain}"
-    [[ "$i" -eq 1 ]] && mark="${mark}${mark:+ · }${cyan}latest${plain}"
-    if [[ -n "$mark" ]]; then
-      printf "  ${cyan}${bold}%2d)${plain} %-12s %b\n" "$i" "$label" "$mark"
-    else
-      printf "  ${cyan}${bold}%2d)${plain} %s\n" "$i" "$label"
-    fi
-    ((i++)) || true
-  done
-  echo ""
-  ui_menu_opt "0" "Отмена"
-  echo ""
-  ui_line
-
+  local pick=0
   while true; do
-    read -rp "$(echo -e "  ${cyan}▸${plain} Номер версии ${dim}[1]${plain}: ")" choice
-    choice="${choice:-1}"
-    [[ "$choice" == "0" ]] && { echo -e "  ${dim}Отменено.${plain}"; exit 0; }
-    if [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#tags[@]} ]]; then
-      SELECTED_TAG="${tags[$((choice-1))]}"
-      echo ""
-      info "Выбрано: ${SELECTED_TAG}"
-      sleep 0.4
-      return 0
+    ui_clear
+    ui_banner
+    ui_box_top
+    ui_box_title "Обновление WDTT"
+    ui_box_bot
+    echo ""
+    ui_kv "Текущая" "${current}"
+    ui_kv "Latest" "${tags[0]}"
+    echo ""
+    ui_line
+    echo -e "  ${bold}Выберите версию:${plain}"
+    echo ""
+
+    local i mark label
+    i=0
+    for tag in "${tags[@]}"; do
+      mark=""
+      label="$tag"
+      [[ "$tag" == "$current" || "$tag" == "v${current}" ]] && mark="${green}● установлена${plain}"
+      [[ "$i" -eq 0 ]] && mark="${mark}${mark:+ · }${cyan}latest${plain}"
+      if [[ "$i" -eq "$pick" ]]; then
+        printf "  ${cyan}${bold}▶ %2d)${plain} %-14s %b\n" "$((i+1))" "$label" "$mark"
+      else
+        printf "    ${dim}%2d)${plain} %-14s %b\n" "$((i+1))" "$label" "$mark"
+      fi
+      ((i++)) || true
+    done
+    echo ""
+    if [[ "$pick" -eq -1 ]]; then
+      printf "  ${cyan}${bold}▶ [0]${plain} Отмена\n"
+    else
+      ui_menu_opt "0" "Отмена"
     fi
-    warn "Введите число от 0 до ${#tags[@]}"
+    echo ""
+    ui_line
+    echo -e "  ${dim}↑↓ / WASD · Enter · цифра · q — назад${plain}"
+    echo ""
+
+    local nav
+    nav="$(ui_read_nav_key)"
+    case "$nav" in
+      up|w|W|k|K)
+        if (( pick < 0 )); then pick=$((${#tags[@]}-1))
+        elif (( pick > 0 )); then ((pick--))
+        else pick=-1
+        fi
+        continue
+        ;;
+      down|s|S|j|J)
+        if (( pick < 0 )); then pick=0
+        elif (( pick < ${#tags[@]}-1 )); then ((pick++))
+        else pick=-1
+        fi
+        continue
+        ;;
+      enter)
+        if (( pick < 0 )); then echo -e "  ${dim}Отменено.${plain}"; exit 0; fi
+        SELECTED_TAG="${tags[$pick]}"
+        info "Выбрано: ${SELECTED_TAG}"
+        sleep 0.3
+        return 0
+        ;;
+      q|Q|esc)
+        echo -e "  ${dim}Отменено.${plain}"
+        exit 0
+        ;;
+      0)
+        echo -e "  ${dim}Отменено.${plain}"
+        exit 0
+        ;;
+      [1-9])
+        if (( nav >= 1 && nav <= ${#tags[@]} )); then
+          SELECTED_TAG="${tags[$((nav-1))]}"
+          info "Выбрано: ${SELECTED_TAG}"
+          sleep 0.3
+          return 0
+        fi
+        ;;
+    esac
   done
 }
 
 show_main_menu() {
-  local os_name="${PRETTY_NAME:-Linux}"
-  local ver="—"
-  is_wdtt_installed && ver="$(get_installed_version)"
   ui_clear
   ui_banner
-  ui_box_top
-  ui_box_title "Главное меню WDTT"
-  if is_wdtt_installed; then
-    ui_box_row "Статус" "Установлен"
-    ui_box_row "Версия" "$ver"
-  else
-    ui_box_row_warn "Статус" "Не установлен"
-  fi
-  ui_box_row "Система" "${os_name}"
-  ui_box_row "Архитектура" "${ARCH}"
-  ui_box_bot
-  echo ""
-  ui_line
-  echo ""
-  if is_wdtt_installed; then
-    ui_menu_opt "1" "Обновить" "выбор версии GitHub Releases"
-    ui_menu_opt "2" "Переустановить" "xray + panel, новый пароль"
-    ui_menu_opt "3" "Статус сервисов"
-    ui_menu_opt "4" "Удалить WDTT"
-    ui_menu_opt "0" "Выход"
-  else
-    ui_menu_opt "1" "Установить" "xray + panel + auto password"
-    ui_menu_opt "2" "Статус сервисов"
-    ui_menu_opt "3" "Удалить WDTT"
-    ui_menu_opt "0" "Выход"
-  fi
-  echo ""
-  ui_line
+  ui_draw_menu_header
 }
 
 run_interactive_menu() {
-  local choice
   detect_os 2>/dev/null || true
+  # /etc/os-release может содержать VERSION= — не даём затереть INSTALLER_VERSION
   while true; do
-    show_main_menu
+    UI_MENU_ITEMS=()
+    UI_MENU_HINTS=()
+
     if is_wdtt_installed; then
-      read -rp "$(echo -e "  ${cyan}▸${plain} Выберите пункт ${dim}[1]${plain}: ")" choice
-      choice="${choice:-1}"
+      UI_MENU_ITEMS=(
+        "Обновить"
+        "Переустановить"
+        "Перезапустить сервисы"
+        "Статус сервисов"
+        "Последние логи"
+        "Удалить WDTT"
+        "Справка"
+        "Выход"
+      )
+      UI_MENU_HINTS=(
+        "выбор версии GitHub"
+        "новый пароль, xray + panel"
+        "wdtt restart"
+        ""
+        "journalctl -n 25"
+        "конфиги /etc/wdtt сохранятся"
+        ""
+        ""
+      )
+    else
+      UI_MENU_ITEMS=(
+        "Установить"
+        "Установить со своим паролем"
+        "Установить без Xray"
+        "Установить без панели"
+        "Статус сервисов"
+        "Справка"
+        "Выход"
+      )
+      UI_MENU_HINTS=(
+        "xray + panel + auto password"
+        "ввести VPN пароль"
+        "только NAT, --direct"
+        "только VPN + server"
+        ""
+        ""
+        ""
+      )
+    fi
+
+    show_main_menu
+    local choice
+    choice="$(ui_menu_interact)" || { echo -e "  ${dim}Выход.${plain}"; exit 0; }
+
+    if is_wdtt_installed; then
       case "$choice" in
-        1) CMD=update; return 0 ;;
-        2) CMD=install; FORCE_INSTALL=1; return 0 ;;
+        0) CMD=update; return 0 ;;
+        1) CMD=install; FORCE_INSTALL=1; return 0 ;;
+        2) ui_clear; ui_banner; cmd_restart_services; ui_press_enter; continue ;;
         3) ui_clear; ui_banner; cmd_status_pretty; ui_press_enter; continue ;;
-        4)
-          read -rp "$(echo -e "  ${yellow}⚠${plain} Удалить WDTT? ${dim}[y/N]${plain}: ")" c
-          [[ "${c,,}" == "y" || "${c,,}" == "yes" || "${c,,}" == "д" ]] && { cmd_uninstall; ui_press_enter; continue; }
+        4) ui_clear; ui_banner; cmd_logs_tail; continue ;;
+        5)
+          ui_confirm "Удалить WDTT?" && { cmd_uninstall; ui_press_enter; }
           continue
           ;;
-        0) echo -e "  ${dim}Выход.${plain}"; exit 0 ;;
-        *) warn "Неверный пункт"; sleep 1; continue ;;
+        6) ui_show_help; continue ;;
+        7) echo -e "  ${dim}Выход.${plain}"; exit 0 ;;
       esac
     else
-      read -rp "$(echo -e "  ${cyan}▸${plain} Выберите пункт ${dim}[1]${plain}: ")" choice
-      choice="${choice:-1}"
       case "$choice" in
-        1) CMD=install; return 0 ;;
-        2) ui_clear; ui_banner; cmd_status_pretty; ui_press_enter; continue ;;
-        3)
-          read -rp "$(echo -e "  ${yellow}⚠${plain} Удалить WDTT? ${dim}[y/N]${plain}: ")" c
-          [[ "${c,,}" == "y" || "${c,,}" == "yes" || "${c,,}" == "д" ]] && { cmd_uninstall; ui_press_enter; continue; }
-          continue
+        0) CMD=install; return 0 ;;
+        1)
+          ui_prompt_password || { warn "Пароль не задан"; ui_press_enter; continue; }
+          CMD=install
+          return 0
           ;;
-        0) echo -e "  ${dim}Выход.${plain}"; exit 0 ;;
-        *) warn "Неверный пункт"; sleep 1; continue ;;
+        2) WITH_XRAY=0; XRAY_MODE_SET=1; CMD=install; return 0 ;;
+        3) WITH_PANEL=0; PANEL_MODE_SET=1; CMD=install; return 0 ;;
+        4) ui_clear; ui_banner; cmd_status_pretty; ui_press_enter; continue ;;
+        5) ui_show_help; continue ;;
+        6) echo -e "  ${dim}Выход.${plain}"; exit 0 ;;
       esac
     fi
   done
@@ -799,12 +1023,14 @@ cmd_status() {
 
 # ── parse args ──
 ORIG_ARGC=$#
-WITH_PANEL=0
-WITH_XRAY=0
+WITH_PANEL=""
+WITH_XRAY=""
 WDTT_PASSWORD=""
 CMD="install"
 FORCE_INSTALL=0
 NO_MENU=0
+XRAY_MODE_SET=0
+PANEL_MODE_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -814,10 +1040,10 @@ while [[ $# -gt 0 ]]; do
     uninstall|remove) CMD=uninstall ;;
     status) CMD=status ;;
     -p|--password) WDTT_PASSWORD="$2"; shift ;;
-    --panel) WITH_PANEL=1 ;;
-    --xray) WITH_XRAY=1 ;;
-    --direct) WITH_XRAY=0 ;;
-    --no-panel) WITH_PANEL=0 ;;
+    --panel) WITH_PANEL=1; PANEL_MODE_SET=1 ;;
+    --xray) WITH_XRAY=1; XRAY_MODE_SET=1 ;;
+    --direct) WITH_XRAY=0; XRAY_MODE_SET=1 ;;
+    --no-panel) WITH_PANEL=0; PANEL_MODE_SET=1 ;;
     --force) FORCE_INSTALL=1 ;;
     --no-menu) NO_MENU=1 ;;
     --version) WDTT_VERSION="$2"; shift ;;
@@ -825,7 +1051,7 @@ while [[ $# -gt 0 ]]; do
     --github-user) GITHUB_USER="$2"; REPO_WDTT="https://github.com/${GITHUB_USER}/wdtt.git"; shift ;;
     -h|--help)
       cat <<EOF
-WDTT Installer v${VERSION}
+WDTT Installer v${INSTALLER_VERSION}
 
 Установка в одну строку:
   bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/main/install.sh)
@@ -853,15 +1079,28 @@ done
 
 [[ "$NO_MENU" == "1" || "${WDTT_NO_MENU:-0}" == "1" ]] && NO_MENU=1
 
-# xray по умолчанию (если не --direct)
-[[ "$CMD" == "install" || "$CMD" == "update" ]] && [[ "$WITH_XRAY" == "0" && "${WDTT_DIRECT:-0}" != "1" ]] && WITH_XRAY=1
-# panel по умолчанию
-[[ "$CMD" == "install" || "$CMD" == "update" ]] && [[ "$WITH_PANEL" == "0" && "${WDTT_NO_PANEL:-0}" != "1" ]] && WITH_PANEL=1
-
 # Интерактивное меню: без аргументов + TTY, или явно "menu"
 if [[ "$CMD" == "menu" ]] || { [[ "$ORIG_ARGC" -eq 0 && -t 0 && "$NO_MENU" != "1" && "$CMD" != "uninstall" && "$CMD" != "status" ]]; }; then
   run_interactive_menu
 fi
+
+# xray / panel по умолчанию (после меню и флагов CLI)
+if [[ "$CMD" == "install" || "$CMD" == "update" ]]; then
+  if [[ "$XRAY_MODE_SET" != "1" && "${WDTT_DIRECT:-0}" != "1" ]]; then
+    WITH_XRAY=1
+  elif [[ -z "$WITH_XRAY" ]]; then
+    WITH_XRAY=1
+  fi
+  [[ "$XRAY_MODE_SET" != "1" && "${WDTT_DIRECT:-0}" == "1" ]] && WITH_XRAY=0
+  if [[ "$PANEL_MODE_SET" != "1" && "${WDTT_NO_PANEL:-0}" != "1" ]]; then
+    WITH_PANEL=1
+  elif [[ -z "$WITH_PANEL" ]]; then
+    WITH_PANEL=1
+  fi
+  [[ "$PANEL_MODE_SET" != "1" && "${WDTT_NO_PANEL:-0}" == "1" ]] && WITH_PANEL=0
+fi
+[[ -z "$WITH_XRAY" ]] && WITH_XRAY=0
+[[ -z "$WITH_PANEL" ]] && WITH_PANEL=0
 
 case "$CMD" in
   status) cmd_status; exit 0 ;;
