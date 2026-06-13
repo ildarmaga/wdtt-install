@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.8"
+INSTALLER_VERSION="1.3.9"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -184,11 +184,11 @@ ui_menu_draw_items() {
     printf '\033[K\n'
   done
   echo ""
-  echo -e "  ${dim}↑↓ / WASD · Enter · 0-9 · q — выход${plain}\033[K"
+  echo -e "  ${dim}↑↓ / WASD · Enter · 0-9 · q/й — выход${plain}\033[K"
   echo ""
 }
 
-# Интерактивное меню: ↑↓ / WASD, Enter, цифры, q — выход
+# Интерактивное меню: ↑↓ / WASD, Enter, цифры, q/й — выход
 # UI_MENU_ITEMS[], UI_MENU_HINTS[], UI_MENU_SELECTED, UI_MENU_RESULT
 ui_menu_interact() {
   local count=${#UI_MENU_ITEMS[@]}
@@ -222,7 +222,7 @@ ui_menu_interact() {
         UI_MENU_RESULT="$UI_MENU_SELECTED"
         return 0
         ;;
-      q|Q|esc)
+      q|Q|й|Й|esc)
         return 255
         ;;
       [0-9])
@@ -622,7 +622,7 @@ pick_release_version() {
       printf "    ${dim}[0]${plain} Отмена\033[K\n"
     fi
     echo ""
-    echo -e "  ${dim}↑↓ / WASD · Enter · цифра · q — назад${plain}\033[K"
+    echo -e "  ${dim}↑↓ / WASD · Enter · цифра · q/й — назад${plain}\033[K"
     echo ""
   }
 
@@ -654,7 +654,7 @@ pick_release_version() {
         sleep 0.3
         return 0
         ;;
-      q|Q|esc)
+      q|Q|й|Й|esc)
         echo -e "  ${dim}Отменено.${plain}"
         exit 0
         ;;
