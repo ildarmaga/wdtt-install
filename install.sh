@@ -17,6 +17,7 @@ XRAY_CONFIG_DIR="/etc/wdtt-xray"
 XRAY_BIN_DIR="/usr/local/wdtt-xray/bin"
 XRAY_LOG_DIR="/var/log/wdtt-xray"
 PANEL_PORT="${WDTT_PANEL_PORT:-2860}"
+SUB_PORT="${WDTT_SUB_PORT:-2096}"
 PANEL_BASE="${WDTT_PANEL_BASE:-/wdtt/}"
 
 # Override before curl|bash to use your GitHub org/user
@@ -467,6 +468,29 @@ detect_wan() {
   ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1
 }
 
+read_panel_ports_from_db() {
+  local db="${CONFIG_DIR}/panel.db"
+  [[ -f "$db" ]] || return 0
+  local row=""
+  if command -v sqlite3 >/dev/null; then
+    row="$(sqlite3 "$db" "SELECT port, sub_port FROM panel_config WHERE id=1;" 2>/dev/null || true)"
+  elif command -v python3 >/dev/null; then
+    row="$(python3 - "$db" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+r = c.execute("SELECT port, sub_port FROM panel_config WHERE id=1").fetchone()
+if r:
+    print(f"{r[0]}|{r[1]}")
+PY
+    )"
+  fi
+  if [[ -n "$row" ]]; then
+    IFS='|' read -r db_panel db_sub <<< "$row"
+    [[ -n "$db_panel" && "$db_panel" -gt 0 ]] && PANEL_PORT="$db_panel"
+    [[ -n "$db_sub" && "$db_sub" -gt 0 ]] && SUB_PORT="$db_sub"
+  fi
+}
+
 setup_sysctl() {
   step "Настройка ip_forward..."
   mkdir -p /etc/sysctl.d
@@ -479,6 +503,7 @@ EOF
 setup_firewall() {
   step "Настройка firewall и NAT..."
   command -v iptables >/dev/null || { warn "iptables не найден — NAT вручную"; return; }
+  read_panel_ports_from_db
   local wan; wan="$(detect_wan)"
   [[ -n "$wan" ]] || { warn "WAN не определён"; return; }
   for rule in \
@@ -487,7 +512,7 @@ setup_firewall() {
     "INPUT -p tcp --dport $SSH_PORT" \
     "INPUT -p tcp --dport $PANEL_PORT" \
     "INPUT -i $IFACE -p tcp --dport $PANEL_PORT" \
-    "INPUT -i $IFACE -p tcp --dport 2096"; do
+    "INPUT -i $IFACE -p tcp --dport $SUB_PORT"; do
     iptables -C $rule -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
       iptables -I $rule -m comment --comment "$IPT_COMMENT" -j ACCEPT
   done
@@ -917,8 +942,6 @@ BindsTo=wdtt.service
 [Service]
 Type=simple
 Environment=XRAY_LOCATION_ASSET=${XRAY_BIN_DIR}
-Environment=PANEL_PORT=${PANEL_PORT}
-Environment=SUB_PORT=2096
 ExecStartPre=/usr/bin/env bash -c 'for i in \$(seq 1 30); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && exit 0; sleep 0.5; done; exit 1'
 ExecStart=${XRAY_BIN_DIR}/xray-linux-amd64 run -c ${XRAY_CONFIG_DIR}/config.json
 ExecStartPost=/usr/bin/env bash -c 'sleep 1; /usr/local/bin/wdtt-xray-rules.sh up'

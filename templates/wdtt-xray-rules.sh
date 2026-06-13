@@ -5,8 +5,37 @@ IFACE="wdtt0"
 XPORT="12345"
 DNS_IP="10.66.66.1"
 TUN_NET="10.66.66.0/24"
-PANEL_PORT="${PANEL_PORT:-2860}"
-SUB_PORT="${SUB_PORT:-2096}"
+
+load_panel_ports() {
+    local db="/etc/wdtt/panel.db"
+    PANEL_PORT="${PANEL_PORT:-}"
+    SUB_PORT="${SUB_PORT:-}"
+    if [[ -f "$db" ]]; then
+        local row=""
+        if command -v sqlite3 >/dev/null; then
+            row="$(sqlite3 "$db" "SELECT port, sub_port FROM panel_config WHERE id=1;" 2>/dev/null || true)"
+        elif command -v python3 >/dev/null; then
+            row="$(python3 - "$db" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+r = c.execute("SELECT port, sub_port FROM panel_config WHERE id=1").fetchone()
+if r:
+    print(f"{r[0]}|{r[1]}")
+PY
+            )"
+        fi
+        if [[ -n "$row" ]]; then
+            IFS='|' read -r db_panel db_sub <<< "$row"
+            [[ -n "$db_panel" && "$db_panel" -gt 0 ]] && PANEL_PORT="$db_panel"
+            [[ -n "$db_sub" && "$db_sub" -gt 0 ]] && SUB_PORT="$db_sub"
+        fi
+    fi
+    PANEL_PORT="${PANEL_PORT:-${WDTT_PANEL_PORT:-2860}}"
+    SUB_PORT="${SUB_PORT:-${WDTT_SUB_PORT:-2096}}"
+}
+
+load_panel_ports
+
 WAN_IFACE="$(ip route get 8.8.8.8 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
 [ -z "$WAN_IFACE" ] && WAN_IFACE="eth0"
 TUN_MTU="$(cat /sys/class/net/${IFACE}/mtu 2>/dev/null)"
@@ -43,7 +72,7 @@ iptables -t nat -N XRAY_REDIRECT
 iptables -t nat -A XRAY_REDIRECT -d 10.66.66.0/24 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 127.0.0.0/8 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 255.255.255.255/32 -j RETURN
-# Панель и подписка — напрямую на сервер, не через xray (иначе таймаут при VPN)
+# Панель и подписка — напрямую на сервер, не через xray (порты из panel.db)
 iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$PANEL_PORT" -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$SUB_PORT" -j RETURN
 # Трафик к локальным адресам сервера (SSH, сервисы на loopback после DNAT)
@@ -67,7 +96,7 @@ table ip wdtt_mtu {
     }
 }
 NFT
-    echo "wdtt-xray rules applied (TCP -> :$XPORT, DNS -> $DNS_IP:53, DF-clear ${WAN_IFACE}->${TUN_NET} >${TUN_MTU}B)"
+    echo "wdtt-xray rules applied (panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, DNS -> $DNS_IP:53, DF-clear ${WAN_IFACE}->${TUN_NET} >${TUN_MTU}B)"
 else
-    echo "wdtt-xray rules applied (TCP -> :$XPORT, DNS -> $DNS_IP:53; nft missing, DF-clear skipped)"
+    echo "wdtt-xray rules applied (panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, DNS -> $DNS_IP:53; nft missing, DF-clear skipped)"
 fi
