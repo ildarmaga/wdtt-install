@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.9"
+INSTALLER_VERSION="1.4.0"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -554,11 +554,33 @@ fetch_release_tags() {
     grep -oP '"tag_name":\s*"\K[^"]+' || true
 }
 
+# Релизы до v1.1.0 — без SQLite panel.db, не показываем в выборе версии.
+release_tag_ge() {
+  local tag="${1#v}" min="${2#v}"
+  [[ -z "$tag" || -z "$min" ]] && return 1
+  local tver mver
+  tver="$(printf '%s\n' "$min" "$tag" | sort -V | head -1)"
+  [[ "$tver" == "$min" ]]
+}
+
+filter_release_tags_since_db() {
+  local -a in=("$@") out=()
+  local t
+  for t in "${in[@]}"; do
+    [[ -z "$t" ]] && continue
+    release_tag_ge "$t" "1.1.0" && out+=("$t")
+  done
+  ((${#out[@]} > 0)) && printf '%s\n' "${out[@]}"
+}
+
 pick_release_version() {
   local -a tags=()
   local tag current i choice mark label
 
   mapfile -t tags < <(fetch_release_tags 20)
+  if ((${#tags[@]} > 0)); then
+    mapfile -t tags < <(filter_release_tags_since_db "${tags[@]}")
+  fi
   if [[ ${#tags[@]} -eq 0 ]]; then
     err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)"
     exit 1
