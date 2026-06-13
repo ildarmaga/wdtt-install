@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.6"
+INSTALLER_VERSION="1.3.7"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -539,8 +539,7 @@ get_installed_version() {
 }
 
 is_wdtt_installed() {
-  [[ -x /usr/local/bin/wdtt-server || -x /usr/local/bin/wdtt-panel ]] && \
-    systemctl list-unit-files wdtt.service 2>/dev/null | grep -q '^wdtt\.service'
+  [[ -x /usr/local/bin/wdtt-server && -f /etc/systemd/system/wdtt.service ]]
 }
 
 fetch_release_tags() {
@@ -1061,10 +1060,11 @@ cmd_uninstall() {
     rm -f "/etc/systemd/system/${u}.service"
   done
   systemctl daemon-reload
+  systemctl reset-failed wdtt.service wdtt-xray.service wdtt-panel.service 2>/dev/null || true
   pkill -x wdtt-server 2>/dev/null || true
   pkill -x wdtt-panel 2>/dev/null || true
   ip link del "$IFACE" 2>/dev/null || true
-  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh
+  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh /usr/local/bin/wdtt
   rm -rf /usr/local/wdtt-xray "$INSTALL_DIR"
   info "WDTT удалён (конфиги в /etc/wdtt сохранены)"
 }
