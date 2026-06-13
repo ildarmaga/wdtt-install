@@ -11,7 +11,7 @@ SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/mai
 bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh")
 ```
 
-Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.3.4` или новее.
+Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.3.5` или новее.
 
 Явно без меню (авто-режим):
 
