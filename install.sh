@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.1"
+INSTALLER_VERSION="1.3.2"
 LOG_FILE="/var/log/wdtt-install.log"
 INSTALL_DIR="${WDTT_INSTALL_DIR:-/usr/local/wdtt}"
 BUILD_DIR="${INSTALL_DIR}/src"
@@ -37,12 +37,12 @@ ui_init_dims() {
   UI_DIMS_INIT=1
   local cols="${COLUMNS:-80}"
   UI_W=52
-  (( cols < UI_W )) && UI_W=$(( cols > 42 ? cols : 42 ))
-  (( cols >= 70 )) && UI_W=58
+  if (( cols < UI_W )); then UI_W=$(( cols > 42 ? cols : 42 )); fi
+  if (( cols >= 70 )); then UI_W=58; fi
   UI_INNER=$(( UI_W - 2 ))
   UI_LABEL_W=14
   UI_VALUE_W=$(( UI_INNER - UI_LABEL_W - 3 ))
-  (( UI_VALUE_W < 12 )) && UI_VALUE_W=12
+  if (( UI_VALUE_W < 12 )); then UI_VALUE_W=12; fi
 }
 
 ui_hline() {
@@ -117,9 +117,33 @@ ui_box_row_warn() {
   printf "${blue}│${plain}  ${dim}%s${plain} ${yellow}%s${plain}${blue}│${plain}\n" "$lp" "$vp"
 }
 
+# bash <(curl ...) — stdin часто не TTY; читаем с /dev/tty
+ui_attach_tty() {
+  if [[ -t 0 ]]; then
+    return 0
+  fi
+  if [[ -r /dev/tty ]]; then
+    exec </dev/tty 2>/dev/null || return 1
+    return 0
+  fi
+  return 1
+}
+
+ui_can_interactive() {
+  [[ "$NO_MENU" != "1" ]] || return 1
+  [[ -t 0 || -t 1 ]] && return 0
+  [[ -r /dev/tty ]] && return 0
+  return 1
+}
+
 ui_read_nav_key() {
   local key seq=""
-  IFS= read -rsn1 key 2>/dev/null || { echo "q"; return; }
+  ui_attach_tty 2>/dev/null || true
+  if ! IFS= read -rsn1 key 2>/dev/null; then
+    echo "q"
+    return
+  fi
+  [[ -z "$key" ]] && { echo "q"; return; }
   if [[ "$key" == $'\x1b' ]]; then
     IFS= read -rsn2 -t 0.05 seq 2>/dev/null || true
     case "$seq" in
@@ -133,7 +157,6 @@ ui_read_nav_key() {
   fi
   case "$key" in
     $'\n'|$'\r') echo "enter"; return ;;
-    '') echo "enter"; return ;;
   esac
   echo "$key"
 }
@@ -258,12 +281,14 @@ cmd_logs_tail() {
 ui_confirm() {
   local prompt="$1"
   local c
+  ui_attach_tty 2>/dev/null || true
   read -rp "$(echo -e "  ${yellow}⚠${plain} ${prompt} ${dim}[y/N]${plain}: ")" c
   [[ "${c,,}" == "y" || "${c,,}" == "yes" || "${c,,}" == "д" || "${c,,}" == "да" ]]
 }
 
 ui_prompt_password() {
   echo ""
+  ui_attach_tty 2>/dev/null || true
   read -rsp "$(echo -e "  ${cyan}▸${plain} VPN пароль: ")" WDTT_PASSWORD
   echo ""
   [[ -n "$WDTT_PASSWORD" ]]
@@ -297,6 +322,7 @@ ui_kv() {
 
 ui_press_enter() {
   echo ""
+  ui_attach_tty 2>/dev/null || true
   read -rp "$(echo -e "${dim}  Нажмите Enter для продолжения...${plain}")" _
 }
 
@@ -624,6 +650,7 @@ show_main_menu() {
 }
 
 run_interactive_menu() {
+  ui_attach_tty || { err "Нужен интерактивный терминал (SSH)"; exit 1; }
   detect_os 2>/dev/null || true
   # /etc/os-release может содержать VERSION= — не даём затереть INSTALLER_VERSION
   while true; do
@@ -1108,8 +1135,8 @@ done
 
 [[ "$NO_MENU" == "1" || "${WDTT_NO_MENU:-0}" == "1" ]] && NO_MENU=1
 
-# Интерактивное меню: без аргументов + TTY, или явно "menu"
-if [[ "$CMD" == "menu" ]] || { [[ "$ORIG_ARGC" -eq 0 && -t 0 && "$NO_MENU" != "1" && "$CMD" != "uninstall" && "$CMD" != "status" ]]; }; then
+# Интерактивное меню: без аргументов + терминал, или явно "menu"
+if [[ "$CMD" == "menu" ]] || { [[ "$ORIG_ARGC" -eq 0 ]] && ui_can_interactive && [[ "$CMD" != "uninstall" && "$CMD" != "status" ]]; }; then
   run_interactive_menu
 fi
 
