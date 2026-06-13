@@ -2,10 +2,11 @@
 # WDTT one-line installer (3x-ui style)
 # Usage:
 #   bash <(curl -Ls https://raw.githubusercontent.com/USER/wdtt-install/main/install.sh)
-#   bash install.sh install -p YOUR_PASSWORD --panel --xray
+#   bash <(curl -Ls https://raw.githubusercontent.com/USER/wdtt-install/main/install.sh) install
+#   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 LOG_FILE="/var/log/wdtt-install.log"
 INSTALL_DIR="${WDTT_INSTALL_DIR:-/usr/local/wdtt}"
 BUILD_DIR="${INSTALL_DIR}/src"
@@ -189,11 +190,108 @@ clone_or_update() {
 
 # Последний GitHub Release (не привязан к версии install.sh — всегда releases/latest).
 WDTT_RELEASE_TAG=""
+SELECTED_TAG=""
+
+gen_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 18 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16
+    return 0
+  fi
+  echo "wdtt$(date +%s | tail -c 8)"
+}
+
+read_existing_password() {
+  if [[ -f /etc/systemd/system/wdtt.service ]]; then
+    grep -oP '(?<=-password )\S+' /etc/systemd/system/wdtt.service 2>/dev/null | head -1
+  fi
+}
+
+get_installed_version() {
+  if [[ -x /usr/local/bin/wdtt-panel ]]; then
+    local v; v="$(/usr/local/bin/wdtt-panel -version 2>/dev/null || true)"
+    [[ -n "$v" && "$v" != "dev" ]] && echo "$v" && return 0
+  fi
+  echo "unknown"
+}
+
+is_wdtt_installed() {
+  [[ -x /usr/local/bin/wdtt-server || -x /usr/local/bin/wdtt-panel ]] && \
+    systemctl list-unit-files wdtt.service 2>/dev/null | grep -q '^wdtt\.service'
+}
+
+fetch_release_tags() {
+  local limit="${1:-20}"
+  curl -fsSL "https://api.github.com/repos/${GITHUB_USER}/wdtt/releases?per_page=${limit}" 2>/dev/null | \
+    grep -oP '"tag_name":\s*"\K[^"]+' || true
+}
+
+pick_release_version() {
+  local -a tags=()
+  local tag current i choice mark
+
+  mapfile -t tags < <(fetch_release_tags 20)
+  if [[ ${#tags[@]} -eq 0 ]]; then
+    err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)"
+    exit 1
+  fi
+
+  current="$(get_installed_version)"
+
+  if [[ -n "${WDTT_VERSION:-}" ]]; then
+    for tag in "${tags[@]}"; do
+      if [[ "$tag" == "${WDTT_VERSION}" || "$tag" == "v${WDTT_VERSION}" ]]; then
+        SELECTED_TAG="$tag"
+        info "Версия из WDTT_VERSION: ${SELECTED_TAG}"
+        return 0
+      fi
+    done
+    SELECTED_TAG="${WDTT_VERSION}"
+    info "Версия из WDTT_VERSION: ${SELECTED_TAG}"
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    SELECTED_TAG="${tags[0]}"
+    info "Неинтерактивный режим — выбрана latest: ${SELECTED_TAG}"
+    return 0
+  fi
+
+  echo ""
+  echo -e "${blue}Обновление WDTT${plain}"
+  echo "Текущая версия: ${current}"
+  echo ""
+  echo "Доступные версии:"
+  i=1
+  for tag in "${tags[@]}"; do
+    mark=""
+    [[ "$tag" == "$current" || "$tag" == "v${current}" ]] && mark=" (установлена)"
+    [[ "$i" -eq 1 ]] && mark="${mark} [latest]"
+    echo "  ${i}) ${tag}${mark}"
+    ((i++)) || true
+  done
+  echo "  0) Отмена"
+  echo ""
+
+  while true; do
+    read -rp "Выберите версию [1]: " choice
+    choice="${choice:-1}"
+    [[ "$choice" == "0" ]] && { echo "Отмена."; exit 0; }
+    if [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#tags[@]} ]]; then
+      SELECTED_TAG="${tags[$((choice-1))]}"
+      return 0
+    fi
+    warn "Неверный выбор — введите число от 0 до ${#tags[@]}"
+  done
+}
 
 download_release_binary() {
-  local repo="$1" name="$2" dest="$3"
-  local api json tag url
-  api="https://api.github.com/repos/${repo}/releases/latest"
+  local repo="$1" name="$2" dest="$3" tag="${4:-latest}"
+  local api json url
+  if [[ "$tag" == "latest" ]]; then
+    api="https://api.github.com/repos/${repo}/releases/latest"
+  else
+    api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+  fi
   json="$(curl -fsSL "$api" 2>/dev/null)" || return 1
   tag="$(echo "$json" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1 || true)"
   url="$(echo "$json" | grep -oE "https://[^\"]+${name}[^\"]*linux-${ARCH}[^\"]*" | head -1 || true)"
@@ -205,10 +303,11 @@ download_release_binary() {
 }
 
 build_server() {
-  step "Установка wdtt-server..."
+  local tag="${1:-latest}"
+  step "Установка wdtt-server${tag:+ (${tag})}..."
   local src="${BUILD_DIR}/wdtt"
   clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-server" "/tmp/wdtt-server-dl" 2>/dev/null; then
+  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-server" "/tmp/wdtt-server-dl" "$tag" 2>/dev/null; then
     install -m 0755 /tmp/wdtt-server-dl /usr/local/bin/wdtt-server
     rm -f /tmp/wdtt-server-dl
     info "wdtt-server скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
@@ -220,12 +319,13 @@ build_server() {
 }
 
 build_panel() {
-  step "Установка wdtt-panel..."
+  local tag="${1:-latest}"
+  step "Установка wdtt-panel${tag:+ (${tag})}..."
   local src="${BUILD_DIR}/wdtt"
   clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
   local panel_src="${src}/panel"
   [[ -d "$panel_src" ]] || { err "Папка panel/ не найдена в репозитории wdtt"; exit 1; }
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-panel" "/tmp/wdtt-panel-dl" 2>/dev/null; then
+  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-panel" "/tmp/wdtt-panel-dl" "$tag" 2>/dev/null; then
     install -m 0755 /tmp/wdtt-panel-dl /usr/local/bin/wdtt-panel
     rm -f /tmp/wdtt-panel-dl
     info "wdtt-panel скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
@@ -387,6 +487,63 @@ print_summary() {
   echo -e "${green}════════════════════════════════════════${plain}"
 }
 
+print_update_summary() {
+  local ip ver; ip="$(curl -4fsS ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
+  ver="$(get_installed_version)"
+  echo ""
+  echo -e "${green}════════════════════════════════════════${plain}"
+  echo -e "${green} WDTT обновлён${plain}"
+  echo -e "${green}════════════════════════════════════════${plain}"
+  echo "  Версия : ${WDTT_RELEASE_TAG:-$SELECTED_TAG} (panel: ${ver})"
+  if [[ -n "${WDTT_PASSWORD:-}" ]]; then
+    echo "  Пароль VPN: ${WDTT_PASSWORD} (без изменений)"
+  fi
+  if [[ "$WITH_PANEL" == "1" ]]; then
+    echo "  Панель: http://${ip}:${PANEL_PORT}${PANEL_BASE}"
+  fi
+  echo ""
+  echo "  Команды:"
+  echo "    wdtt status"
+  echo "    wdtt update"
+  echo "    wdtt restart"
+  echo -e "${green}════════════════════════════════════════${plain}"
+}
+
+cmd_update() {
+  step "Обновление WDTT..."
+  WDTT_PASSWORD="$(read_existing_password)"
+  [[ -n "$WDTT_PASSWORD" ]] || WDTT_PASSWORD="$(gen_password)"
+
+  pick_release_version
+
+  build_server "$SELECTED_TAG"
+  if [[ "$WITH_PANEL" == "1" ]]; then
+    build_panel "$SELECTED_TAG"
+    install_panel_service
+  fi
+
+  # Обновить шаблон правил xray (DF-clear и др.)
+  if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
+    install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
+    /usr/local/bin/wdtt-xray-rules.sh up 2>/dev/null || true
+  fi
+
+  if [[ "$WITH_XRAY" == "1" ]]; then
+    if [[ ! -x "${XRAY_BIN_DIR}/xray-linux-amd64" ]]; then
+      install_xray_binary
+      install_xray_config
+    fi
+    install_xray_rules
+  fi
+
+  ensure_install_tree
+  chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/templates/wdtt-cli.sh" 2>/dev/null || true
+  install -m 0755 "$INSTALL_DIR/templates/wdtt-cli.sh" /usr/local/bin/wdtt
+
+  start_services
+  print_update_summary
+}
+
 cmd_uninstall() {
   step "Удаление WDTT..."
   for u in wdtt-panel wdtt-xray wdtt; do
@@ -415,38 +572,47 @@ WITH_PANEL=0
 WITH_XRAY=0
 WDTT_PASSWORD=""
 CMD="install"
+FORCE_INSTALL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     install) CMD=install ;;
+    update) CMD=update ;;
     uninstall|remove) CMD=uninstall ;;
     status) CMD=status ;;
     -p|--password) WDTT_PASSWORD="$2"; shift ;;
     --panel) WITH_PANEL=1 ;;
     --xray) WITH_XRAY=1 ;;
     --direct) WITH_XRAY=0 ;;
+    --no-panel) WITH_PANEL=0 ;;
+    --force) FORCE_INSTALL=1 ;;
+    --version) WDTT_VERSION="$2"; shift ;;
     --port) PANEL_PORT="$2"; shift ;;
     --github-user) GITHUB_USER="$2"; REPO_WDTT="https://github.com/${GITHUB_USER}/wdtt.git"; shift ;;
     -h|--help)
       cat <<EOF
 WDTT Installer v${VERSION}
 
-Установка в одну строку (как 3x-ui):
-  bash <(curl -Ls https://raw.githubusercontent.com/USER/wdtt-install/main/install.sh)
+Установка в одну строку:
+  bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/main/install.sh)
+  bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/main/install.sh) install
 
-С опциями:
-  bash install.sh install -p SECRET --xray --panel
+По умолчанию: пароль генерируется автоматически, xray + panel включаются сами.
+Если WDTT уже установлен — запускается обновление с выбором версии из GitHub Releases.
 
 Опции:
-  -p, --password PASS   Главный пароль VPN (обязательно)
+  -p, --password PASS   Свой пароль VPN (иначе генерируется автоматически)
+  --version TAG         Версия для обновления (например v1.2.4), без интерактива
   --xray                Xray routing (по умолчанию включён)
   --direct              Без Xray, только прямой NAT
-  --panel               Веб-панель (порт ${PANEL_PORT})
-  --github-user USER    Ваш GitHub (репозиторий wdtt, по умолчанию: ${GITHUB_USER})
-  status | uninstall
+  --panel               Веб-панель (по умолчанию включена)
+  --no-panel            Без веб-панели
+  --force               Переустановка даже если WDTT уже установлен
+  --github-user USER    GitHub (репозиторий wdtt, по умолчанию: ${GITHUB_USER})
+  update | status | uninstall
 
 Переменные окружения:
-  WDTT_GITHUB_USER, WDTT_REPO, WDTT_DTLS_PORT, WDTT_WG_PORT, WDTT_PANEL_PORT
+  WDTT_GITHUB_USER, WDTT_REPO, WDTT_VERSION, WDTT_DTLS_PORT, WDTT_WG_PORT, WDTT_PANEL_PORT
 EOF
       exit 0
       ;;
@@ -455,22 +621,35 @@ EOF
 done
 
 # xray по умолчанию (если не --direct)
-[[ "$CMD" == "install" && "$WITH_XRAY" == "0" && "${WDTT_DIRECT:-0}" != "1" ]] && WITH_XRAY=1
+[[ "$CMD" == "install" || "$CMD" == "update" ]] && [[ "$WITH_XRAY" == "0" && "${WDTT_DIRECT:-0}" != "1" ]] && WITH_XRAY=1
 # panel по умолчанию
-[[ "$CMD" == "install" && "$WITH_PANEL" == "0" && "${WDTT_NO_PANEL:-0}" != "1" ]] && WITH_PANEL=1
+[[ "$CMD" == "install" || "$CMD" == "update" ]] && [[ "$WITH_PANEL" == "0" && "${WDTT_NO_PANEL:-0}" != "1" ]] && WITH_PANEL=1
 
 case "$CMD" in
   status) cmd_status; exit 0 ;;
   uninstall) cmd_uninstall; exit 0 ;;
 esac
 
+# Уже установлен → обновление (если не --force)
+if [[ "$CMD" == "install" && "$FORCE_INSTALL" != "1" ]] && is_wdtt_installed; then
+  info "WDTT уже установлен — режим обновления"
+  CMD=update
+fi
+
+case "$CMD" in
+  update)
+    detect_os
+    install_deps
+    ensure_install_tree
+    cmd_update
+    exit 0
+    ;;
+esac
+
+# ── Свежая установка ──
 if [[ -z "$WDTT_PASSWORD" ]]; then
-  if [[ -t 0 ]]; then
-    read -rsp "Главный пароль VPN: " WDTT_PASSWORD; echo
-  else
-    WDTT_PASSWORD="wdtt$(openssl rand -hex 4 2>/dev/null || echo 1234)"
-    warn "Пароль не задан — сгенерирован: $WDTT_PASSWORD"
-  fi
+  WDTT_PASSWORD="$(gen_password)"
+  info "Сгенерирован пароль VPN: ${WDTT_PASSWORD}  (сохраните!)"
 fi
 
 detect_os

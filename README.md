@@ -6,16 +6,40 @@ VPN-протокол основан на [proxy-turn-vk-android](https://github.
 
 ## Быстрая установка
 
-Замените `YOUR_GITHUB_USER` на ваш GitHub-логин:
-
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/YOUR_GITHUB_USER/wdtt-install/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
 ```
 
-С паролем и без интерактива:
+или явно:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/YOUR_GITHUB_USER/wdtt-install/main/install.sh) install -p YOUR_PASSWORD --xray --panel
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install
+```
+
+**По умолчанию:**
+- пароль VPN **генерируется автоматически** (показывается в конце установки);
+- **xray** и **веб-панель** устанавливаются сами;
+- если WDTT уже установлен — запускается **обновление** с выбором версии из GitHub Releases.
+
+Свой пароль (опционально):
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install -p YOUR_PASSWORD
+```
+
+## Обновление
+
+Повторный запуск install на уже установленном сервере:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install
+```
+
+Появится меню выбора версии (v1.2.4, v1.2.3, …). Или без меню:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) update --version v1.2.4
+wdtt update
 ```
 
 ## Что устанавливается
@@ -33,56 +57,34 @@ bash <(curl -Ls https://raw.githubusercontent.com/YOUR_GITHUB_USER/wdtt-install/
 ## Опции
 
 ```
-install -p PASSWORD   главный пароль VPN
+install               установка (или обновление, если уже есть WDTT)
+update                обновление с выбором версии
+-p, --password PASS   свой пароль VPN (иначе генерируется)
+--version TAG         версия для обновления (v1.2.4)
 --xray                маршрутизация через xray (по умолчанию)
 --direct              без xray, прямой NAT
 --panel               веб-панель (по умолчанию)
---github-user USER    ваш GitHub (репозитории server/panel/install)
+--no-panel            без панели
+--force               переустановка даже если WDTT уже есть
+--github-user USER    ваш GitHub
 status | uninstall
 ```
 
-Переменные: `WDTT_GITHUB_USER`, `WDTT_DTLS_PORT`, `WDTT_WG_PORT`, `WDTT_PANEL_PORT`.
+Переменные: `WDTT_GITHUB_USER`, `WDTT_VERSION`, `WDTT_DTLS_PORT`, `WDTT_WG_PORT`, `WDTT_PANEL_PORT`.
 
 ## После установки
 
 - Панель: `http://IP:2860/wdtt/` — логин `admin`, пароль `wdtt`
-- Команда: `wdtt status` / `wdtt restart` / `wdtt log`
+- Команды: `wdtt status` / `wdtt update` / `wdtt restart` / `wdtt log`
 - Outbound (NL, warp…) настраивается в панели → **Настройки Xray**
 
 ## Репозитории
 
-Нужны два репозитория на GitHub:
-
-1. [wdtt](https://github.com/ildarmaga/wdtt) — сервер (`server.go`) + панель (`panel/`)
+1. [wdtt](https://github.com/ildarmaga/wdtt) — сервер + панель
 2. **wdtt-install** — этот репозиторий (установщик)
 
-Установщик клонирует `wdtt` один раз и собирает сервер и панель из одного репозитория.
-
-## Публикация на GitHub
+## Локальная установка
 
 ```bash
-# 1. Создайте репозитории: wdtt, wdtt-install
-
-# 2. wdtt (сервер + panel/)
-cd /root/wdtt
-git add . && git commit -m "WDTT monorepo: server + panel"
-git remote add origin git@github.com:YOUR_USER/wdtt.git
-git push -u origin main
-
-# 3. wdtt-install
-cd /root/wdtt-install
-git add . && git commit -m "Initial installer"
-git remote add origin git@github.com:YOUR_USER/wdtt-install.git
-git push -u origin main
-
-# 4. Установка одной строкой
-bash <(curl -Ls https://raw.githubusercontent.com/YOUR_USER/wdtt-install/main/install.sh) install -p secret --panel --xray
+bash /root/wdtt-install/install.sh install
 ```
-
-## Локальная установка (без GitHub)
-
-```bash
-bash /root/wdtt-install/install.sh install -p mypass --panel --xray
-```
-
-С локальными исходниками задайте пути через клон в `/usr/local/wdtt/src` или положите бинарники в `/tmp/wdtt-server` перед запуском.

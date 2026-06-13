@@ -7,6 +7,7 @@ case "${1:-}" in
   stop)    systemctl stop wdtt-xray wdtt-panel wdtt 2>/dev/null || true ;;
   start)   systemctl start wdtt; systemctl start wdtt-xray 2>/dev/null || true; systemctl start wdtt-panel 2>/dev/null || true ;;
   log)     journalctl -u wdtt -u wdtt-xray -u wdtt-panel -f ;;
+  update)  bash /usr/local/wdtt/install.sh update ;;
   uninstall) bash /usr/local/wdtt/install.sh uninstall ;;
-  *) echo "Usage: wdtt {status|restart|stop|start|log|uninstall}"; exit 1 ;;
+  *) echo "Usage: wdtt {status|restart|stop|start|log|update|uninstall}"; exit 1 ;;
 esac
