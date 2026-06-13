@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.5"
+INSTALLER_VERSION="1.3.6"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -31,8 +31,8 @@ SSH_PORT="${WDTT_SSH_PORT:-22}"
 IFACE="wdtt0"
 IPT_COMMENT="WDTT_MANAGED"
 
-red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; blue='\033[0;34m'
-cyan='\033[0;36m'; magenta='\033[0;35m'; bold='\033[1m'; dim='\033[2m'; plain='\033[0m'
+red=$'\033[0;31m'; green=$'\033[0;32m'; yellow=$'\033[0;33m'; blue=$'\033[0;34m'
+cyan=$'\033[0;36m'; magenta=$'\033[0;35m'; bold=$'\033[1m'; dim=$'\033[2m'; plain=$'\033[0m'
 
 ui_init_dims() {
   [[ -n "${UI_DIMS_INIT:-}" ]] && return
@@ -145,8 +145,11 @@ ui_read_nav_key() {
     echo "q"
     return
   fi
-  [[ -z "$key" ]] && { echo "q"; return; }
-  if [[ "$key" == $'\x1b' ]]; then
+  # Enter на части SSH-клиентов приходит как пустой символ или CR
+  if [[ -z "$key" || "$key" == $'\r' || "$key" == $'\n' ]]; then
+    echo "enter"
+    return
+  fi
     IFS= read -rsn2 -t 0.05 seq 2>/dev/null || true
     case "$seq" in
       '[A') echo "up"; return ;;
@@ -157,9 +160,6 @@ ui_read_nav_key() {
     echo "esc"
     return
   fi
-  case "$key" in
-    $'\n'|$'\r') echo "enter"; return ;;
-  esac
   echo "$key"
 }
 
@@ -328,7 +328,7 @@ ui_success_box() {
 }
 
 ui_kv() {
-  printf "  ${dim}%-14s${plain} ${bold}%s${plain}\n" "$1" "$2"
+  printf "  ${dim}%-14s${plain} ${bold}%b${plain}\n" "$1" "$2"
 }
 
 ui_press_enter() {
@@ -945,7 +945,7 @@ print_summary() {
     echo ""
     ui_kv "Панель" "http://${ip}:${PANEL_PORT}${PANEL_BASE}"
     ui_kv "Логин" "admin"
-    ui_kv "Пароль" "wdtt  ${dim}(смените в настройках)${plain}"
+    ui_kv "Пароль" "wdtt ${dim}(смените в настройках)${plain}"
   fi
   if [[ "$WITH_XRAY" == "1" ]]; then
     echo ""
