@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.3.7"
+INSTALLER_VERSION="1.3.8"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -151,12 +151,18 @@ ui_read_nav_key() {
     return
   fi
   if [[ "$key" == $'\x1b' ]]; then
-    IFS= read -rsn2 -t 0.05 seq 2>/dev/null || true
-    case "$seq" in
-      '[A') echo "up"; return ;;
-      '[B') echo "down"; return ;;
-      '[C') echo "right"; return ;;
-      '[D') echo "left"; return ;;
+    local c0 c1
+    IFS= read -rsn1 -t 0.3 c0 2>/dev/null || { echo "esc"; return; }
+    if [[ "$c0" != '[' ]]; then
+      echo "esc"
+      return
+    fi
+    IFS= read -rsn1 -t 0.3 c1 2>/dev/null || { echo "esc"; return; }
+    case "$c1" in
+      A) echo "up"; return ;;
+      B) echo "down"; return ;;
+      C) echo "right"; return ;;
+      D) echo "left"; return ;;
     esac
     echo "esc"
     return
@@ -200,14 +206,14 @@ ui_menu_interact() {
     case "$nav" in
       up|w|W|k|K)
         if (( UI_MENU_SELECTED > 0 )); then
-          ((UI_MENU_SELECTED--))
+          UI_MENU_SELECTED=$((UI_MENU_SELECTED - 1))
           printf '\033[%dA' "$menu_block_lines"
           ui_menu_draw_items
         fi
         ;;
       down|s|S|j|J)
         if (( UI_MENU_SELECTED < count - 1 )); then
-          ((UI_MENU_SELECTED++))
+          UI_MENU_SELECTED=$((UI_MENU_SELECTED + 1))
           printf '\033[%dA' "$menu_block_lines"
           ui_menu_draw_items
         fi
@@ -573,28 +579,29 @@ pick_release_version() {
     return 0
   fi
 
-  if [[ ! -t 0 ]]; then
+  if ! ui_attach_tty 2>/dev/null && [[ ! -t 0 ]]; then
     SELECTED_TAG="${tags[0]}"
     info "Неинтерактивный режим — выбрана latest: ${SELECTED_TAG}"
     return 0
   fi
 
-  local pick=0
-  while true; do
-    ui_clear
-    ui_banner
-    ui_box_top
-    ui_box_title "Обновление WDTT"
-    ui_box_bot
-    echo ""
-    ui_kv "Текущая" "${current}"
-    ui_kv "Latest" "${tags[0]}"
-    echo ""
-    ui_line
-    echo -e "  ${bold}Выберите версию:${plain}"
-    echo ""
+  local pick=0 nav i mark label block_lines
+  block_lines=$((${#tags[@]} + 5))
 
-    local i mark label
+  ui_clear
+  ui_banner
+  ui_box_top
+  ui_box_title "Обновление WDTT"
+  ui_box_bot
+  echo ""
+  ui_kv "Текущая" "${current}"
+  ui_kv "Latest" "${tags[0]}"
+  echo ""
+  ui_line
+  echo -e "  ${bold}Выберите версию:${plain}"
+  echo ""
+
+  _pick_draw_versions() {
     i=0
     for tag in "${tags[@]}"; do
       mark=""
@@ -602,39 +609,43 @@ pick_release_version() {
       [[ "$tag" == "$current" || "$tag" == "v${current}" ]] && mark="${green}● установлена${plain}"
       [[ "$i" -eq 0 ]] && mark="${mark}${mark:+ · }${cyan}latest${plain}"
       if [[ "$i" -eq "$pick" ]]; then
-        printf "  ${cyan}${bold}▶ %2d)${plain} %-14s %b\n" "$((i+1))" "$label" "$mark"
+        printf "  ${cyan}${bold}▶ %2d)${plain} %-14s %b\033[K\n" "$((i+1))" "$label" "$mark"
       else
-        printf "    ${dim}%2d)${plain} %-14s %b\n" "$((i+1))" "$label" "$mark"
+        printf "    ${dim}%2d)${plain} %-14s %b\033[K\n" "$((i+1))" "$label" "$mark"
       fi
-      ((i++)) || true
+      i=$((i + 1))
     done
     echo ""
     if [[ "$pick" -eq -1 ]]; then
-      printf "  ${cyan}${bold}▶ [0]${plain} Отмена\n"
+      printf "  ${cyan}${bold}▶ [0]${plain} Отмена\033[K\n"
     else
-      ui_menu_opt "0" "Отмена"
+      printf "    ${dim}[0]${plain} Отмена\033[K\n"
     fi
     echo ""
-    ui_line
-    echo -e "  ${dim}↑↓ / WASD · Enter · цифра · q — назад${plain}"
+    echo -e "  ${dim}↑↓ / WASD · Enter · цифра · q — назад${plain}\033[K"
     echo ""
+  }
 
-    local nav
+  _pick_draw_versions
+
+  while true; do
     nav="$(ui_read_nav_key)"
     case "$nav" in
       up|w|W|k|K)
-        if (( pick < 0 )); then pick=$((${#tags[@]}-1))
-        elif (( pick > 0 )); then ((pick--))
+        if (( pick < 0 )); then pick=$((${#tags[@]} - 1))
+        elif (( pick > 0 )); then pick=$((pick - 1))
         else pick=-1
         fi
-        continue
+        printf '\033[%dA' "$block_lines"
+        _pick_draw_versions
         ;;
       down|s|S|j|J)
         if (( pick < 0 )); then pick=0
-        elif (( pick < ${#tags[@]}-1 )); then ((pick++))
+        elif (( pick < ${#tags[@]} - 1 )); then pick=$((pick + 1))
         else pick=-1
         fi
-        continue
+        printf '\033[%dA' "$block_lines"
+        _pick_draw_versions
         ;;
       enter)
         if (( pick < 0 )); then echo -e "  ${dim}Отменено.${plain}"; exit 0; fi
@@ -653,7 +664,7 @@ pick_release_version() {
         ;;
       [1-9])
         if (( nav >= 1 && nav <= ${#tags[@]} )); then
-          SELECTED_TAG="${tags[$((nav-1))]}"
+          SELECTED_TAG="${tags[$((nav - 1))]}"
           info "Выбрано: ${SELECTED_TAG}"
           sleep 0.3
           return 0
