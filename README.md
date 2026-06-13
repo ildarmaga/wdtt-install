@@ -10,10 +10,18 @@ VPN-протокол основан на [proxy-turn-vk-android](https://github.
 bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
 ```
 
-или явно:
+При запуске по SSH откроется **интерактивное меню** (установка / обновление / статус / удаление).
+
+Явно без меню (авто-режим):
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install --no-menu
+```
+
+или:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) menu
 ```
 
 **По умолчанию:**
@@ -75,7 +83,7 @@ status | uninstall
 ## После установки
 
 - Панель: `http://IP:2860/wdtt/` — логин `admin`, пароль `wdtt`
-- Команды: `wdtt status` / `wdtt update` / `wdtt restart` / `wdtt log`
+- Команды: `wdtt menu` / `wdtt status` / `wdtt update` / `wdtt restart` / `wdtt log`
 - Outbound (NL, warp…) настраивается в панели → **Настройки Xray**
 
 ## Репозитории
