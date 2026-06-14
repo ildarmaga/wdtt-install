@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.0"
+INSTALLER_VERSION="1.4.1"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -500,6 +500,19 @@ EOF
   sysctl -p /etc/sysctl.d/99-wdtt.conf >/dev/null 2>&1 || true
 }
 
+install_mtu_rules_script() {
+  [[ -f "${TEMPLATES_DIR}/wdtt-mtu-rules.sh" ]] || return 0
+  install -m 0755 "${TEMPLATES_DIR}/wdtt-mtu-rules.sh" /usr/local/bin/wdtt-mtu-rules.sh
+}
+
+apply_mtu_rules() {
+  install_mtu_rules_script
+  if [[ -x /usr/local/bin/wdtt-mtu-rules.sh ]]; then
+    /usr/local/bin/wdtt-mtu-rules.sh up 2>/dev/null || true
+    info "MTU: MSS clamp + DF-clear для 10.66.66.0/24"
+  fi
+}
+
 setup_firewall() {
   step "Настройка firewall и NAT..."
   command -v iptables >/dev/null || { warn "iptables не найден — NAT вручную"; return; }
@@ -523,6 +536,7 @@ setup_firewall() {
   iptables -t nat -C POSTROUTING -s 10.66.66.0/24 -o "$wan" -m comment --comment "$IPT_COMMENT" -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -s 10.66.66.0/24 -o "$wan" -m comment --comment "$IPT_COMMENT" -j MASQUERADE
   info "NAT на $wan для 10.66.66.0/24"
+  apply_mtu_rules
 }
 
 clone_or_update() {
@@ -880,6 +894,8 @@ Wants=network-online.target
 Type=simple
 ExecStartPre=-/usr/bin/env bash -c "ip link show ${IFACE} >/dev/null 2>&1 && ip link del ${IFACE} 2>/dev/null || true"
 ExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:${DTLS_PORT} -wg-port ${WG_PORT} -config-dir ${CONFIG_DIR} -password ${pass}
+ExecStartPost=/usr/bin/env bash -c 'for i in \$(seq 1 60); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && /usr/local/bin/wdtt-mtu-rules.sh up && exit 0; sleep 0.5; done; /usr/local/bin/wdtt-mtu-rules.sh up'
+ExecStopPost=-/usr/local/bin/wdtt-mtu-rules.sh down
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
@@ -887,6 +903,7 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
+  install_mtu_rules_script
   systemctl daemon-reload
   systemctl enable wdtt.service
 }
@@ -931,6 +948,7 @@ install_xray_config() {
 }
 
 install_xray_rules() {
+  install_mtu_rules_script
   install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
   cat > /etc/systemd/system/wdtt-xray.service <<EOF
 [Unit]
@@ -1087,11 +1105,14 @@ cmd_update() {
     install_panel_service
   fi
 
+  install_mtu_rules_script
   if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
     step "Обновление правил xray..."
     install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
     /usr/local/bin/wdtt-xray-rules.sh up 2>/dev/null || true
     info "Правила xray обновлены"
+  else
+    apply_mtu_rules
   fi
 
   if [[ "$WITH_XRAY" == "1" ]]; then
@@ -1125,7 +1146,8 @@ cmd_uninstall() {
   pkill -x wdtt-server 2>/dev/null || true
   pkill -x wdtt-panel 2>/dev/null || true
   ip link del "$IFACE" 2>/dev/null || true
-  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh /usr/local/bin/wdtt
+  /usr/local/bin/wdtt-mtu-rules.sh down 2>/dev/null || true
+  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh /usr/local/bin/wdtt-mtu-rules.sh /usr/local/bin/wdtt
   rm -rf /usr/local/wdtt-xray "$INSTALL_DIR"
   info "WDTT удалён (конфиги в /etc/wdtt сохранены)"
 }
