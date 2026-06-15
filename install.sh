@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.1"
+INSTALLER_VERSION="1.4.2"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -285,7 +285,6 @@ cmd_restart_services() {
   systemctl restart wdtt.service 2>/dev/null || warn "wdtt не запущен"
   sleep 1
   systemctl restart wdtt-xray.service 2>/dev/null || true
-  systemctl restart wdtt-panel.service 2>/dev/null || true
   info "Сервисы перезапущены"
 }
 
@@ -294,7 +293,7 @@ cmd_logs_tail() {
   ui_box_title "Последние логи (25 строк)"
   ui_box_bot
   echo ""
-  journalctl -u wdtt -u wdtt-xray -u wdtt-panel -n 25 --no-pager 2>/dev/null || warn "journalctl недоступен"
+  journalctl -u wdtt -u wdtt-xray -n 25 --no-pager 2>/dev/null || warn "journalctl недоступен"
   echo ""
   ui_press_enter
 }
@@ -934,6 +933,32 @@ disable_legacy_panel_service() {
   systemctl daemon-reload 2>/dev/null || true
 }
 
+wdtt_units_list() {
+  echo wdtt
+  [[ "${WITH_XRAY:-1}" == "1" ]] && echo wdtt-xray
+}
+
+fix_xray_dns_if_needed() {
+  local cfg="${XRAY_CONFIG_DIR}/config.json"
+  [[ -f "$cfg" ]] || return 0
+  grep -q 'dns-query' "$cfg" 2>/dev/null || return 0
+  command -v python3 >/dev/null || return 0
+  python3 - "$cfg" <<'PY' && info "Xray DNS: DoH заменён на UDP 1.1.1.1/8.8.8.8"
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    cfg = json.load(f)
+dns = cfg.setdefault("dns", {})
+servers = dns.get("servers") or []
+if not any("dns-query" in str(s) for s in servers):
+    sys.exit(0)
+dns["servers"] = ["1.1.1.1", "8.8.8.8"]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PY
+}
+
 install_wdtt_service() {
   local pass="$1"
   local panel_flags=" -admin-addr 127.0.0.1:2861"
@@ -948,6 +973,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+SyslogIdentifier=wdtt
 ExecStartPre=-/usr/bin/env bash -c "ip link show ${IFACE} >/dev/null 2>&1 && ip link del ${IFACE} 2>/dev/null || true"
 ExecStart=${WDTT_BIN} -listen 0.0.0.0:${DTLS_PORT} -wg-port ${WG_PORT} -config-dir ${CONFIG_DIR} -password '${pass}'${panel_flags}
 ExecStartPost=/usr/bin/env bash -c 'for i in \$(seq 1 60); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && /usr/local/bin/wdtt-mtu-rules.sh up && exit 0; sleep 0.5; done; /usr/local/bin/wdtt-mtu-rules.sh up'
@@ -999,6 +1025,7 @@ install_xray_config() {
   else
     install -m 0644 "${TEMPLATES_DIR}/xray-config.json" "${XRAY_CONFIG_DIR}/config.json"
   fi
+  fix_xray_dns_if_needed
   mkdir -p "${XRAY_LOG_DIR}"
   touch "${XRAY_LOG_DIR}/access.log" "${XRAY_LOG_DIR}/error.log"
   chmod 644 "${XRAY_LOG_DIR}/access.log" "${XRAY_LOG_DIR}/error.log" 2>/dev/null || true
@@ -1031,28 +1058,6 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable wdtt-xray.service
-}
-
-install_panel_service() {
-  cat > /etc/systemd/system/wdtt-panel.service <<EOF
-[Unit]
-Description=WDTT Web Panel
-After=network-online.target wdtt.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-Environment=HOME=/root
-ExecStart=/usr/local/bin/wdtt-panel
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable wdtt-panel.service
 }
 
 start_services() {
@@ -1092,14 +1097,16 @@ print_summary() {
   echo ""
   ui_line
   echo -e "  ${bold}Сервисы:${plain}"
-  for svc in wdtt wdtt-xray wdtt-panel; do
-    local st; st="$(systemctl is-active "${svc}.service" 2>/dev/null || echo inactive)"
+  local svc st
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] || continue
+    st="$(systemctl is-active "${svc}.service" 2>/dev/null || echo inactive)"
     if [[ "$st" == "active" ]]; then
       printf "    ${green}●${plain} %-12s ${green}running${plain}\n" "$svc"
     else
       printf "    ${dim}○${plain} %-12s ${dim}%s${plain}\n" "$svc" "$st"
     fi
-  done
+  done < <(wdtt_units_list)
   echo ""
   ui_line
   echo -e "  ${dim}Команды:${plain}  ${cyan}wdtt status${plain} · ${cyan}wdtt update${plain} · ${cyan}wdtt restart${plain}"
@@ -1125,14 +1132,16 @@ print_update_summary() {
   echo ""
   ui_line
   echo -e "  ${bold}Сервисы:${plain}"
-  for svc in wdtt wdtt-xray wdtt-panel; do
-    local st; st="$(systemctl is-active "${svc}.service" 2>/dev/null || echo inactive)"
+  local st
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] || continue
+    st="$(systemctl is-active "${svc}.service" 2>/dev/null || echo inactive)"
     if [[ "$st" == "active" ]]; then
       printf "    ${green}●${plain} %-12s ${green}running${plain}\n" "$svc"
     else
       printf "    ${dim}○${plain} %-12s ${dim}%s${plain}\n" "$svc" "$st"
     fi
-  done
+  done < <(wdtt_units_list)
   echo ""
   ui_line
   echo -e "  ${dim}Команды:${plain}  ${cyan}wdtt status${plain} · ${cyan}wdtt update${plain} · ${cyan}wdtt restart${plain}"
@@ -1175,6 +1184,8 @@ cmd_update() {
     if [[ ! -x "${XRAY_BIN_DIR}/xray-linux-amd64" ]]; then
       install_xray_binary
       install_xray_config
+    else
+      fix_xray_dns_if_needed
     fi
     install_xray_rules
   fi
@@ -1189,13 +1200,15 @@ cmd_update() {
 }
 
 stop_wdtt_services() {
-  for u in wdtt-panel wdtt-xray wdtt; do
+  local u
+  for u in wdtt-xray wdtt; do
     systemctl stop "$u.service" 2>/dev/null || true
     systemctl disable "$u.service" 2>/dev/null || true
     rm -f "/etc/systemd/system/${u}.service"
   done
+  disable_legacy_panel_service
   systemctl daemon-reload 2>/dev/null || true
-  systemctl reset-failed wdtt.service wdtt-xray.service wdtt-panel.service 2>/dev/null || true
+  systemctl reset-failed wdtt.service wdtt-xray.service 2>/dev/null || true
 }
 
 kill_wdtt_processes() {
@@ -1309,7 +1322,8 @@ cmd_status_pretty() {
   ui_box_title "Статус сервисов"
   ui_box_bot
   echo ""
-  for u in wdtt wdtt-xray wdtt-panel; do
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
     st="$(systemctl is-active "${u}.service" 2>/dev/null || echo "не установлен")"
     if [[ "$st" == "active" ]]; then
       printf "    ${green}●${plain} %-14s ${green}%s${plain}\n" "$u" "$st"
@@ -1318,7 +1332,7 @@ cmd_status_pretty() {
     else
       printf "    ${yellow}●${plain} %-14s ${yellow}%s${plain}\n" "$u" "$st"
     fi
-  done
+  done < <(wdtt_units_list)
   echo ""
   if is_wdtt_installed; then
     ui_kv "Версия" "$(get_installed_version)"

@@ -46,11 +46,11 @@ _run_installer() {
 }
 
 case "${1:-}" in
-  status)    systemctl status wdtt wdtt-xray wdtt-panel --no-pager 2>/dev/null || systemctl status wdtt --no-pager ;;
-  restart)   systemctl restart wdtt; systemctl restart wdtt-xray 2>/dev/null || true; systemctl restart wdtt-panel 2>/dev/null || true; echo "restarted" ;;
-  stop)      systemctl stop wdtt-xray wdtt-panel wdtt 2>/dev/null || true ;;
-  start)     systemctl start wdtt; systemctl start wdtt-xray 2>/dev/null || true; systemctl start wdtt-panel 2>/dev/null || true ;;
-  log)       journalctl -u wdtt -u wdtt-xray -u wdtt-panel -f ;;
+  status)    systemctl status wdtt wdtt-xray --no-pager 2>/dev/null || systemctl status wdtt --no-pager ;;
+  restart)   systemctl restart wdtt; systemctl restart wdtt-xray 2>/dev/null || true; echo "restarted" ;;
+  stop)      systemctl stop wdtt-xray wdtt 2>/dev/null || true ;;
+  start)     systemctl start wdtt; systemctl start wdtt-xray 2>/dev/null || true ;;
+  log)       journalctl -u wdtt -u wdtt-xray -f ;;
   menu)      _run_installer menu ;;
   update)    _run_installer update "${@:2}" ;;
   uninstall) _run_installer uninstall ;;

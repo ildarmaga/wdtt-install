@@ -13,7 +13,7 @@
   },
   "dns": {
     "queryStrategy": "UseIPv4",
-    "servers": ["https://1.1.1.1/dns-query", "1.1.1.1"]
+    "servers": ["1.1.1.1", "8.8.8.8"]
   },
   "inbounds": [
     {
