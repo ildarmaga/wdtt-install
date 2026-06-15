@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.5.0"
+INSTALLER_VERSION="1.6.0"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -269,7 +269,7 @@ ui_show_help() {
   ui_kv "Обновление" "wdtt update"
   ui_kv "Статус" "wdtt status"
   ui_kv "Логи" "wdtt log"
-  ui_kv "CLI" "wdtt restart | stop | start | uninstall"
+  ui_kv "CLI" "wdtt restart | stop | start | uninstall | purge"
   echo ""
   ui_kv "Опции" "--password, --direct, --no-panel"
   ui_kv "Версия" "install update --version v1.2.4"
@@ -763,7 +763,8 @@ run_interactive_menu() {
         "Перезапустить сервисы"
         "Статус сервисов"
         "Последние логи"
-        "Удалить WDTT"
+        "Удалить (конфиги останутся)"
+        "Полное удаление (purge)"
         "Справка"
         "Выход"
       )
@@ -773,7 +774,8 @@ run_interactive_menu() {
         "wdtt restart"
         ""
         "journalctl -n 25"
-        "конфиги /etc/wdtt сохранятся"
+        "/etc/wdtt сохранится"
+        "всё: конфиги, NAT, firewall"
         ""
         ""
       )
@@ -810,11 +812,15 @@ run_interactive_menu() {
         3) ui_clear; ui_banner; cmd_status_pretty; ui_press_enter; continue ;;
         4) ui_clear; ui_banner; cmd_logs_tail; continue ;;
         5)
-          ui_confirm "Удалить WDTT?" && { cmd_uninstall; ui_press_enter; }
+          ui_confirm "Удалить WDTT? Конфиги в /etc/wdtt останутся." && { cmd_uninstall; ui_press_enter; }
           continue
           ;;
-        6) ui_show_help; continue ;;
-        7) echo -e "  ${dim}Выход.${plain}"; exit 0 ;;
+        6)
+          ui_confirm "Полное удаление? Будут стёрты /etc/wdtt, /etc/wdtt-xray, NAT и firewall." && { cmd_purge; ui_press_enter; }
+          continue
+          ;;
+        7) ui_show_help; continue ;;
+        8) echo -e "  ${dim}Выход.${plain}"; exit 0 ;;
       esac
     else
       case "$choice" in
@@ -1126,24 +1132,118 @@ cmd_update() {
   print_update_summary
 }
 
-cmd_uninstall() {
-  ui_clear
-  ui_banner
-  step "Удаление WDTT..."
+stop_wdtt_services() {
   for u in wdtt-panel wdtt-xray wdtt; do
     systemctl stop "$u.service" 2>/dev/null || true
     systemctl disable "$u.service" 2>/dev/null || true
     rm -f "/etc/systemd/system/${u}.service"
   done
-  systemctl daemon-reload
+  systemctl daemon-reload 2>/dev/null || true
   systemctl reset-failed wdtt.service wdtt-xray.service wdtt-panel.service 2>/dev/null || true
-  pkill -x wdtt 2>/dev/null || pkill -x wdtt-server 2>/dev/null || true
+}
+
+kill_wdtt_processes() {
+  pkill -x wdtt 2>/dev/null || true
+  pkill -x wdtt-server 2>/dev/null || true
   pkill -x wdtt-panel 2>/dev/null || true
+  sleep 1
+  pkill -9 -x wdtt 2>/dev/null || true
+  pkill -9 -x wdtt-server 2>/dev/null || true
+  pkill -9 -x wdtt-panel 2>/dev/null || true
+}
+
+remove_wdtt_network() {
   ip link del "$IFACE" 2>/dev/null || true
-  /usr/local/bin/wdtt-mtu-rules.sh down 2>/dev/null || true
-  rm -f /usr/local/bin/wdtt /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh /usr/local/bin/wdtt-mtu-rules.sh /usr/local/bin/wdtt-cli
+  if [[ -x /usr/local/bin/wdtt-mtu-rules.sh ]]; then
+    /usr/local/bin/wdtt-mtu-rules.sh down 2>/dev/null || true
+  fi
+  if [[ -x /usr/local/bin/wdtt-xray-rules.sh ]]; then
+    /usr/local/bin/wdtt-xray-rules.sh down 2>/dev/null || true
+  fi
+}
+
+remove_wdtt_binaries() {
+  rm -f \
+    /usr/local/bin/wdtt \
+    /usr/local/bin/wdtt-server \
+    /usr/local/bin/wdtt-panel \
+    /usr/local/bin/wdtt-cli \
+    /usr/local/bin/wdtt-xray-rules.sh \
+    /usr/local/bin/wdtt-mtu-rules.sh
+}
+
+cleanup_firewall_wdtt() {
+  command -v iptables >/dev/null || return 0
+  step "Удаление правил firewall и NAT..."
+  read_panel_ports_from_db
+  local wan port_specs=(
+    "${DTLS_PORT}:udp"
+    "${WG_PORT}:udp"
+    "${SSH_PORT}:tcp"
+    "${PANEL_PORT}:tcp"
+    "${SUB_PORT}:tcp"
+    "2860:tcp"
+    "2096:tcp"
+    "22:tcp"
+  )
+  wan="$(detect_wan)"
+  local i spec proto port nat_iface
+  for i in $(seq 1 10); do
+    for spec in "${port_specs[@]}"; do
+      proto="${spec#*:}"
+      port="${spec%%:*}"
+      iptables -D INPUT -p "$proto" --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+      iptables -D INPUT -i "$IFACE" -p "$proto" --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+    done
+    iptables -D FORWARD -i "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -o "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+    if [[ -n "$wan" ]]; then
+      iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o "$wan" -m comment --comment "$IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+    fi
+    for nat_iface in "$wan" $(ls /sys/class/net 2>/dev/null); do
+      [[ -n "$nat_iface" ]] || continue
+      iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o "$nat_iface" -m comment --comment "$IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+    done
+  done
+  if command -v nft >/dev/null; then
+    nft delete table ip wdtt 2>/dev/null || true
+    nft delete table inet wdtt 2>/dev/null || true
+  fi
+  info "Правила iptables/nft с меткой ${IPT_COMMENT} сняты"
+}
+
+cmd_uninstall() {
+  ui_clear
+  ui_banner
+  step "Удаление WDTT (конфиги сохраняются)..."
+  stop_wdtt_services
+  kill_wdtt_processes
+  remove_wdtt_network
+  remove_wdtt_binaries
   rm -rf /usr/local/wdtt-xray "$INSTALL_DIR"
-  info "WDTT удалён (конфиги в /etc/wdtt сохранены)"
+  info "WDTT удалён. Конфиги сохранены: ${CONFIG_DIR}, ${XRAY_CONFIG_DIR}"
+}
+
+cmd_purge() {
+  ui_clear
+  ui_banner
+  step "Полное удаление WDTT с сервера..."
+  stop_wdtt_services
+  kill_wdtt_processes
+  remove_wdtt_network
+  cleanup_firewall_wdtt
+  remove_wdtt_binaries
+  rm -rf \
+    "$CONFIG_DIR" \
+    "$XRAY_CONFIG_DIR" \
+    "$XRAY_LOG_DIR" \
+    "$XRAY_BIN_DIR" \
+    /usr/local/wdtt-xray \
+    "$INSTALL_DIR" \
+    "$BUILD_DIR"
+  rm -f /etc/sysctl.d/99-wdtt.conf
+  sysctl --system >/dev/null 2>&1 || true
+  info "WDTT полностью удалён (бинарники, сервисы, ${CONFIG_DIR}, ${XRAY_CONFIG_DIR}, firewall)"
 }
 
 cmd_status_pretty() {
@@ -1192,6 +1292,7 @@ while [[ $# -gt 0 ]]; do
     update) CMD=update ;;
     menu) CMD=menu ;;
     uninstall|remove) CMD=uninstall ;;
+    purge|remove-all|wipe) CMD=purge ;;
     status) CMD=status ;;
     -p|--password) WDTT_PASSWORD="$2"; shift ;;
     --panel) WITH_PANEL=1; PANEL_MODE_SET=1 ;;
@@ -1221,7 +1322,10 @@ WDTT Installer v${INSTALLER_VERSION}
   --version TAG         Версия для обновления (v1.2.4)
   --no-menu             Без интерактивного меню
   --force               Переустановка
-  menu | update | status | uninstall
+  menu | update | status | uninstall | purge
+
+  uninstall  — сервисы и бинарники; /etc/wdtt сохраняется
+  purge      — полное удаление: конфиги, NAT, firewall, логи
 
 Переменные: WDTT_GITHUB_USER, WDTT_VERSION, WDTT_NO_MENU=1
 EOF
@@ -1234,7 +1338,7 @@ done
 [[ "$NO_MENU" == "1" || "${WDTT_NO_MENU:-0}" == "1" ]] && NO_MENU=1
 
 # Интерактивное меню: без аргументов + терминал, или явно "menu"
-if [[ "$CMD" == "menu" ]] || { [[ "$ORIG_ARGC" -eq 0 ]] && ui_can_interactive && [[ "$CMD" != "uninstall" && "$CMD" != "status" ]]; }; then
+if [[ "$CMD" == "menu" ]] || { [[ "$ORIG_ARGC" -eq 0 ]] && ui_can_interactive && [[ "$CMD" != "uninstall" && "$CMD" != "purge" && "$CMD" != "status" ]]; }; then
   run_interactive_menu
 fi
 
@@ -1259,6 +1363,7 @@ fi
 case "$CMD" in
   status) cmd_status; exit 0 ;;
   uninstall) cmd_uninstall; exit 0 ;;
+  purge) cmd_purge; exit 0 ;;
 esac
 
 # Уже установлен → обновление (если не --force)

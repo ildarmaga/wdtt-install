@@ -54,5 +54,6 @@ case "${1:-}" in
   menu)    _run_installer menu ;;
   update)  _run_installer update "${@:2}" ;;
   uninstall) _run_installer uninstall ;;
-  *) echo "Usage: wdtt {status|restart|stop|start|log|menu|update|uninstall}"; exit 1 ;;
+  purge)     _run_installer purge ;;
+  *) echo "Usage: wdtt {status|restart|stop|start|log|menu|update|uninstall|purge}"; exit 1 ;;
 esac

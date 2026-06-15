@@ -11,7 +11,7 @@ SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/mai
 bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh")
 ```
 
-Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.5.0` или новее.
+Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.6.0` или новее.
 
 Явно без меню (авто-режим):
 
@@ -79,7 +79,17 @@ update                обновление с выбором версии
 --no-panel            без панели
 --force               переустановка даже если WDTT уже есть
 --github-user USER    ваш GitHub
-status | uninstall
+status | uninstall | purge
+```
+
+**Удаление:**
+- `uninstall` — сервисы и бинарники; `/etc/wdtt` сохраняется
+- `purge` — **полное удаление**: `/etc/wdtt`, `/etc/wdtt-xray`, NAT, firewall, логи
+
+```bash
+bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh") purge
+# или
+wdtt-cli purge
 ```
 
 Переменные: `WDTT_GITHUB_USER`, `WDTT_VERSION`, `WDTT_DTLS_PORT`, `WDTT_WG_PORT`, `WDTT_PANEL_PORT`.
