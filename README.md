@@ -11,7 +11,7 @@ SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/mai
 bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh")
 ```
 
-Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.3.5` или новее.
+Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.5.0` или новее.
 
 Явно без меню (авто-режим):
 
@@ -58,9 +58,9 @@ wdtt update
 
 | Компонент | Путь | Сервис |
 |-----------|------|--------|
-| wdtt-server | `/usr/local/bin/wdtt-server` | `wdtt.service` |
+| wdtt (unified) | `/usr/local/bin/wdtt` | `wdtt.service` (server + panel) |
 | xray routing | `/usr/local/wdtt-xray/bin/` | `wdtt-xray.service` |
-| wdtt-panel | `/usr/local/bin/wdtt-panel` | `wdtt-panel.service` |
+| wdtt-cli | `/usr/local/bin/wdtt-cli` | `wdtt status`, `wdtt update` |
 | Конфиг VPN | `/etc/wdtt/` | — |
 | Конфиг Xray | `/etc/wdtt-xray/config.json` | — |
 

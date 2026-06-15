@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.1"
+INSTALLER_VERSION="1.5.0"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -579,6 +579,10 @@ read_existing_password() {
 }
 
 get_installed_version() {
+  if [[ -x /usr/local/bin/wdtt ]] && file /usr/local/bin/wdtt 2>/dev/null | grep -q ELF; then
+    local v; v="$(/usr/local/bin/wdtt -version 2>/dev/null || true)"
+    [[ -n "$v" && "$v" != "dev" ]] && echo "$v" && return 0
+  fi
   if [[ -x /usr/local/bin/wdtt-panel ]]; then
     local v; v="$(/usr/local/bin/wdtt-panel -version 2>/dev/null || true)"
     [[ -n "$v" && "$v" != "dev" ]] && echo "$v" && return 0
@@ -587,7 +591,7 @@ get_installed_version() {
 }
 
 is_wdtt_installed() {
-  [[ -x /usr/local/bin/wdtt-server && -f /etc/systemd/system/wdtt.service ]]
+  [[ -f /etc/systemd/system/wdtt.service ]] && { [[ -x /usr/local/bin/wdtt ]] || [[ -x /usr/local/bin/wdtt-server ]]; }
 }
 
 fetch_release_tags() {
@@ -848,42 +852,36 @@ download_release_binary() {
   return 0
 }
 
-build_server() {
+build_wdtt() {
   local tag="${1:-latest}"
-  step "Установка wdtt-server${tag:+ (${tag})}..."
+  step "Установка wdtt (server+panel)${tag:+ (${tag})}..."
   local src="${BUILD_DIR}/wdtt"
   clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-server" "/tmp/wdtt-server-dl" "$tag" 2>/dev/null; then
-    install -m 0755 /tmp/wdtt-server-dl /usr/local/bin/wdtt-server
-    rm -f /tmp/wdtt-server-dl
-    info "wdtt-server скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
+  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag" 2>/dev/null; then
+    install -m 0755 /tmp/wdtt-dl /usr/local/bin/wdtt
+    rm -f /tmp/wdtt-dl
+    info "wdtt скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
     return
   fi
   command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Установите golang или создайте Release"; exit 1; }
-  (cd "$src" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="-s -w" -o /usr/local/bin/wdtt-server .)
-  info "wdtt-server собран из исходников (fallback)"
+  (cd "$src" && chmod +x build.sh && ./build.sh "$ARCH" unified)
+  install -m 0755 "${src}/wdtt-linux-${ARCH}" /usr/local/bin/wdtt
+  info "wdtt собран из исходников (fallback)"
 }
 
-build_panel() {
-  local tag="${1:-latest}"
-  step "Установка wdtt-panel${tag:+ (${tag})}..."
-  local src="${BUILD_DIR}/wdtt"
-  clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
-  local panel_src="${src}/panel"
-  [[ -d "$panel_src" ]] || { err "Папка panel/ не найдена в репозитории wdtt"; exit 1; }
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-panel" "/tmp/wdtt-panel-dl" "$tag" 2>/dev/null; then
-    install -m 0755 /tmp/wdtt-panel-dl /usr/local/bin/wdtt-panel
-    rm -f /tmp/wdtt-panel-dl
-    info "wdtt-panel скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
-    return
-  fi
-  command -v go >/dev/null || { err "Нет Go для сборки панели"; exit 1; }
-  (cd "$panel_src" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="-s -w" -o /usr/local/bin/wdtt-panel .)
-  info "wdtt-panel собран из исходников (fallback)"
+disable_legacy_panel_service() {
+  systemctl stop wdtt-panel.service 2>/dev/null || true
+  systemctl disable wdtt-panel.service 2>/dev/null || true
+  rm -f /etc/systemd/system/wdtt-panel.service
+  systemctl daemon-reload 2>/dev/null || true
 }
 
 install_wdtt_service() {
   local pass="$1"
+  local panel_flags=" -admin-addr 127.0.0.1:2861"
+  if [[ "$WITH_PANEL" != "1" ]]; then
+    panel_flags=" -no-panel"
+  fi
   cat > /etc/systemd/system/wdtt.service <<EOF
 [Unit]
 Description=WDTT VPN Server
@@ -893,7 +891,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/env bash -c "ip link show ${IFACE} >/dev/null 2>&1 && ip link del ${IFACE} 2>/dev/null || true"
-ExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:${DTLS_PORT} -wg-port ${WG_PORT} -config-dir ${CONFIG_DIR} -password ${pass}
+ExecStart=/usr/local/bin/wdtt -listen 0.0.0.0:${DTLS_PORT} -wg-port ${WG_PORT} -config-dir ${CONFIG_DIR} -password ${pass}${panel_flags}
 ExecStartPost=/usr/bin/env bash -c 'for i in \$(seq 1 60); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && /usr/local/bin/wdtt-mtu-rules.sh up && exit 0; sleep 0.5; done; /usr/local/bin/wdtt-mtu-rules.sh up'
 ExecStopPost=-/usr/local/bin/wdtt-mtu-rules.sh down
 Restart=always
@@ -904,6 +902,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
   install_mtu_rules_script
+  disable_legacy_panel_service
   systemctl daemon-reload
   systemctl enable wdtt.service
 }
@@ -1000,13 +999,11 @@ EOF
 
 start_services() {
   step "Запуск сервисов..."
+  disable_legacy_panel_service
   systemctl restart wdtt.service
   sleep 2
   if [[ "$WITH_XRAY" == "1" ]]; then
     systemctl restart wdtt-xray.service || warn "wdtt-xray не запустился — настройте outbound в панели"
-  fi
-  if [[ "$WITH_PANEL" == "1" ]]; then
-    systemctl restart wdtt-panel.service || true
   fi
 }
 
@@ -1099,11 +1096,8 @@ cmd_update() {
   ui_box_bot
   echo ""
 
-  build_server "$SELECTED_TAG"
-  if [[ "$WITH_PANEL" == "1" ]]; then
-    build_panel "$SELECTED_TAG"
-    install_panel_service
-  fi
+  build_wdtt "$SELECTED_TAG"
+  disable_legacy_panel_service
 
   install_mtu_rules_script
   if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
@@ -1125,7 +1119,7 @@ cmd_update() {
 
   ensure_install_tree
   chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/templates/wdtt-cli.sh" 2>/dev/null || true
-  install -m 0755 "$INSTALL_DIR/templates/wdtt-cli.sh" /usr/local/bin/wdtt
+  install -m 0755 "$INSTALL_DIR/templates/wdtt-cli.sh" /usr/local/bin/wdtt-cli
 
   step "Перезапуск сервисов..."
   start_services
@@ -1143,11 +1137,11 @@ cmd_uninstall() {
   done
   systemctl daemon-reload
   systemctl reset-failed wdtt.service wdtt-xray.service wdtt-panel.service 2>/dev/null || true
-  pkill -x wdtt-server 2>/dev/null || true
+  pkill -x wdtt 2>/dev/null || pkill -x wdtt-server 2>/dev/null || true
   pkill -x wdtt-panel 2>/dev/null || true
   ip link del "$IFACE" 2>/dev/null || true
   /usr/local/bin/wdtt-mtu-rules.sh down 2>/dev/null || true
-  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh /usr/local/bin/wdtt-mtu-rules.sh /usr/local/bin/wdtt
+  rm -f /usr/local/bin/wdtt /usr/local/bin/wdtt-server /usr/local/bin/wdtt-panel /usr/local/bin/wdtt-xray-rules.sh /usr/local/bin/wdtt-mtu-rules.sh /usr/local/bin/wdtt-cli
   rm -rf /usr/local/wdtt-xray "$INSTALL_DIR"
   info "WDTT удалён (конфиги в /etc/wdtt сохранены)"
 }
@@ -1305,16 +1299,9 @@ install_deps
 ensure_install_tree
 setup_sysctl
 setup_firewall
-build_server
+build_wdtt
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
-
-if [[ "$WITH_PANEL" == "1" ]]; then
-  build_panel
-  install_panel_service
-  systemctl start wdtt-panel.service 2>/dev/null || true
-  sleep 2
-fi
 
 install_wdtt_service "$WDTT_PASSWORD"
 
@@ -1330,7 +1317,7 @@ fi
 
 ensure_install_tree
 chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/templates/wdtt-cli.sh" 2>/dev/null || true
-install -m 0755 "$INSTALL_DIR/templates/wdtt-cli.sh" /usr/local/bin/wdtt
+install -m 0755 "$INSTALL_DIR/templates/wdtt-cli.sh" /usr/local/bin/wdtt-cli
 
 step "Запуск сервисов..."
 start_services
