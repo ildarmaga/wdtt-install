@@ -7,17 +7,7 @@ VPN-протокол основан на [proxy-turn-vk-android](https://github.
 ## Быстрая установка
 
 ```bash
-SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/main | sed -n 's/.*"sha": "\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
-bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh")
-```
-
-Так обходится кэш GitHub CDN на `main/install.sh`. В шапке должно быть `installer v1.6.0` или новее.
-
-Явно без меню (авто-режим):
-
-```bash
-SHA=$(curl -fsSL https://api.github.com/repos/ildarmaga/wdtt-install/commits/main | sed -n 's/.*"sha": "\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
-bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/${SHA}/install.sh") install --no-menu
+bash <(curl -fsSL https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh)
 ```
 
 или:
@@ -36,31 +26,28 @@ wdtt menu
 Свой пароль (опционально):
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install -p YOUR_PASSWORD
+bash <(curl -fsSL https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install -p YOUR_PASSWORD
 ```
 
 ## Обновление
 
-Повторный запуск install на уже установленном сервере:
-
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install
+wdtt update
 ```
 
-Появится меню выбора версии (v1.2.4, v1.2.3, …). Или без меню:
+или повторный запуск install:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) update --version v1.2.4
-wdtt update
+bash <(curl -fsSL https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh) install
 ```
 
 ## Что устанавливается
 
 | Компонент | Путь | Сервис |
 |-----------|------|--------|
-| wdtt (unified) | `/usr/local/bin/wdtt` | `wdtt.service` (server + panel) |
+| wdtt (unified) | `/usr/local/bin/wdtt-app` | `wdtt.service` (server + panel) |
+| CLI | `/usr/local/bin/wdtt` | `wdtt menu`, `wdtt status`, `wdtt purge` |
 | xray routing | `/usr/local/wdtt-xray/bin/` | `wdtt-xray.service` |
-| wdtt-cli | `/usr/local/bin/wdtt-cli` | `wdtt status`, `wdtt update` |
 | Конфиг VPN | `/etc/wdtt/` | — |
 | Конфиг Xray | `/etc/wdtt-xray/config.json` | — |
 
@@ -72,7 +59,7 @@ wdtt update
 install               установка (или обновление, если уже есть WDTT)
 update                обновление с выбором версии
 -p, --password PASS   свой пароль VPN (иначе генерируется)
---version TAG         версия для обновления (v1.2.4)
+--version TAG         версия для обновления (v1.4.0)
 --xray                маршрутизация через xray (по умолчанию)
 --direct              без xray, прямой NAT
 --panel               веб-панель (по умолчанию)
@@ -83,21 +70,15 @@ status | uninstall | purge
 ```
 
 **Удаление:**
-- `uninstall` — сервисы и бинарники; `/etc/wdtt` сохраняется
-- `purge` — **полное удаление**: `/etc/wdtt`, `/etc/wdtt-xray`, NAT, firewall, логи
-
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/install.sh") purge
-# или
-wdtt-cli purge
-```
+- `wdtt uninstall` — сервисы и бинарники; `/etc/wdtt` сохраняется
+- `wdtt purge` — **полное удаление**: `/etc/wdtt`, `/etc/wdtt-xray`, NAT, firewall, логи
 
 Переменные: `WDTT_GITHUB_USER`, `WDTT_VERSION`, `WDTT_DTLS_PORT`, `WDTT_WG_PORT`, `WDTT_PANEL_PORT`.
 
 ## После установки
 
 - Панель: `http://IP:2860/wdtt/` — логин `admin`, пароль `wdtt`
-- Команды: `wdtt menu` / `wdtt status` / `wdtt update` / `wdtt restart` / `wdtt log`
+- Команды: `wdtt menu` · `wdtt status` · `wdtt update` · `wdtt purge` · `wdtt restart` · `wdtt log`
 - Outbound (NL, warp…) настраивается в панели → **Настройки Xray**
 
 ## Репозитории
