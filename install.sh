@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.24"
+INSTALLER_VERSION="1.4.25"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -1579,11 +1579,11 @@ install_deps
 ensure_install_tree
 setup_sysctl
 setup_firewall
-build_wdtt
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
-
 seed_install_main_password_env
+build_wdtt
+
 install_wdtt_service "$WDTT_PASSWORD"
 
 if [[ "$WITH_XRAY" == "1" ]]; then
