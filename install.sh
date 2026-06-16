@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.2"
+INSTALLER_VERSION="1.4.9"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -574,9 +574,52 @@ gen_password() {
 }
 
 read_existing_password() {
+  local db="${CONFIG_DIR}/panel.db"
+  local p=""
+  if [[ -f "$db" ]] && command -v sqlite3 >/dev/null; then
+    p="$(sqlite3 "$db" "SELECT main_password FROM wdtt_global WHERE id=1;" 2>/dev/null || true)"
+    [[ -n "$p" ]] && echo "$p" && return 0
+  fi
+  p="$(readDeployEnvValue "${CONFIG_DIR}/install-main-password.env" "MAIN_PASSWORD")"
+  [[ -n "$p" ]] && echo "$p" && return 0
   if [[ -f /etc/systemd/system/wdtt.service ]]; then
     grep -oP "(?<=-password ')[^']+|(?<=-password )\S+" /etc/systemd/system/wdtt.service 2>/dev/null | head -1
   fi
+}
+
+readDeployEnvValue() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 0
+  local line val
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="$(echo "$line" | tr -d '[:space:]')"
+    [[ "$line" == "${key}="* ]] || continue
+    val="${line#${key}=}"
+    [[ -n "$val" ]] && echo "$val" && return 0
+  done < "$file"
+}
+
+write_install_inbound_env() {
+  mkdir -p "$CONFIG_DIR"
+  cat > "${CONFIG_DIR}/install-inbound.env" <<EOF
+# Порты для seed panel.db (install.sh). Дальше — только через панель → Подключения.
+DTLS_PORT=${DTLS_PORT}
+WG_PORT=${WG_PORT}
+EOF
+  chmod 644 "${CONFIG_DIR}/install-inbound.env"
+}
+
+write_install_main_password_env() {
+  local pass="$1"
+  [[ -n "$pass" ]] || return 0
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+  cat > "${CONFIG_DIR}/install-main-password.env" <<EOF
+# Главный пароль VPN для первого seed panel.db (install.sh). Не дублируется в systemd.
+MAIN_PASSWORD=${pass}
+EOF
+  chmod 600 "${CONFIG_DIR}/install-main-password.env"
 }
 
 wdtt_binary_path() {
@@ -961,13 +1004,19 @@ PY
 
 install_wdtt_service() {
   local pass="$1"
-  local panel_flags=" -admin-addr 127.0.0.1:2861"
+  write_install_inbound_env
+  local exec_args="-config-dir ${CONFIG_DIR}"
   if [[ "$WITH_PANEL" != "1" ]]; then
-    panel_flags=" -no-panel"
+    exec_args+=" -no-panel -password '${pass}'"
   fi
+  local ipt_pre
+  ipt_pre=$(cat <<IPT
+ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; fi"
+IPT
+)
   cat > /etc/systemd/system/wdtt.service <<EOF
 [Unit]
-Description=WDTT VPN Server
+Description=WDTT (panel + VPN server)
 After=network-online.target
 Wants=network-online.target
 
@@ -975,7 +1024,8 @@ Wants=network-online.target
 Type=simple
 SyslogIdentifier=wdtt
 ExecStartPre=-/usr/bin/env bash -c "ip link show ${IFACE} >/dev/null 2>&1 && ip link del ${IFACE} 2>/dev/null || true"
-ExecStart=${WDTT_BIN} -listen 0.0.0.0:${DTLS_PORT} -wg-port ${WG_PORT} -config-dir ${CONFIG_DIR} -password '${pass}'${panel_flags}
+${ipt_pre}
+ExecStart=${WDTT_BIN} ${exec_args}
 ExecStartPost=/usr/bin/env bash -c 'for i in \$(seq 1 60); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && /usr/local/bin/wdtt-mtu-rules.sh up && exit 0; sleep 0.5; done; /usr/local/bin/wdtt-mtu-rules.sh up'
 ExecStopPost=-/usr/local/bin/wdtt-mtu-rules.sh down
 Restart=always
@@ -989,6 +1039,7 @@ EOF
   disable_legacy_panel_service
   systemctl daemon-reload
   systemctl enable wdtt.service
+  info "unit: ExecStart только -config-dir (VPN-параметры в panel.db)"
 }
 
 install_xray_binary() {
@@ -1479,6 +1530,7 @@ build_wdtt
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
+write_install_main_password_env "$WDTT_PASSWORD"
 install_wdtt_service "$WDTT_PASSWORD"
 
 if [[ "$WITH_XRAY" == "1" ]]; then

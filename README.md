@@ -18,10 +18,12 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.4.1** или новее (совпадает с линейкой релизов wdtt).
+В шапке установщика: **installer v1.4.9** (совпадает с линейкой релизов wdtt).
+
+**Рекомендуется wdtt ≥ v1.4.9** (unified, in-process restart, minimal systemd unit).
 
 **По умолчанию:**
-- пароль VPN **генерируется автоматически** (показывается в конце установки);
+- пароль VPN **генерируется автоматически** (в `panel.db`, не в systemd);
 - **xray** и **веб-панель** устанавливаются сами;
 - если WDTT уже установлен — запускается **обновление** с выбором версии из GitHub Releases.
 
@@ -50,8 +52,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/
 | wdtt (unified) | `/usr/local/bin/wdtt-app` | `wdtt.service` (server + panel) |
 | CLI | `/usr/local/bin/wdtt` | `wdtt menu`, `wdtt status`, `wdtt purge` |
 | xray routing | `/usr/local/wdtt-xray/bin/` | `wdtt-xray.service` |
-| Конфиг VPN | `/etc/wdtt/` | — |
+| Конфиг VPN | `/etc/wdtt/panel.db` | — |
+| Seed при установке | `/etc/wdtt/install-inbound.env`, `install-main-password.env` | — |
 | Конфиг Xray | `/etc/wdtt-xray/config.json` | — |
+
+**systemd unit (v1.4.9+):** `ExecStart=/usr/local/bin/wdtt-app -config-dir /etc/wdtt` — порты, DNS, лимиты только в **panel.db** (Панель → Подключения).
 
 По умолчанию: **xray + panel**. Только VPN без Xray: `--direct`.
 
@@ -61,11 +66,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/
 install               установка (или обновление, если уже есть WDTT)
 update                обновление с выбором версии
 -p, --password PASS   свой пароль VPN (иначе генерируется)
---version TAG         версия для обновления (v1.4.0)
+--version TAG         версия для обновления (v1.4.9)
 --xray                маршрутизация через xray (по умолчанию)
 --direct              без xray, прямой NAT
 --panel               веб-панель (по умолчанию)
---no-panel            без панели
+--no-panel            без панели (-password остаётся в ExecStart)
 --force               переустановка даже если WDTT уже есть
 --github-user USER    ваш GitHub
 status | uninstall | purge
@@ -87,6 +92,8 @@ status | uninstall | purge
 
 1. [wdtt](https://github.com/ildarmaga/wdtt) — сервер + панель
 2. **wdtt-install** — этот репозиторий (установщик)
+
+При изменении unified-архитектуры или `deploy.sh` в **wdtt** — синхронизировать `install.sh` здесь (unit, seed-файлы, README).
 
 ## Локальная установка
 
