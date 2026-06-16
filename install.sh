@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.23"
+INSTALLER_VERSION="1.4.24"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -544,8 +544,8 @@ clone_or_update() {
   local url="$1" dest="$2" local_fallback="${3:-}"
   if [[ -d "$dest/.git" ]]; then
     git -C "$dest" fetch --depth 1 origin "$BRANCH" 2>>"$LOG_FILE" || true
-    git -C "$dest" checkout -f "$BRANCH" 2>>"$LOG_FILE" || true
-    git -C "$dest" pull --ff-only origin "$BRANCH" 2>>"$LOG_FILE" || true
+    git -C "$dest" reset --hard "origin/${BRANCH}" 2>>"$LOG_FILE" \
+      || git -C "$dest" checkout -f "$BRANCH" 2>>"$LOG_FILE" || true
     return 0
   fi
   rm -rf "$dest"
@@ -943,20 +943,42 @@ run_interactive_menu() {
 
 download_release_binary() {
   local repo="$1" name="$2" dest="$3" tag="${4:-latest}"
-  local api json url asset
+  local api json url asset ver_tag
   asset="${name}-${ARCH}"
+  command -v curl >/dev/null || return 1
+
+  if [[ "$tag" == "latest" ]]; then
+    url="https://github.com/${repo}/releases/latest/download/${asset}"
+    if curl -fsSL -L "$url" -o "$dest" 2>/dev/null && [[ -s "$dest" ]]; then
+      ver_tag="$(curl -fsSL -I "https://github.com/${repo}/releases/latest" 2>/dev/null \
+        | grep -i '^location:' | tail -1 | sed 's|.*/tag/||;s/\r//;s/ .*//')"
+      chmod +x "$dest"
+      [[ -n "$ver_tag" ]] && WDTT_RELEASE_TAG="$ver_tag"
+      return 0
+    fi
+  else
+    ver_tag="${tag#v}"
+    ver_tag="v${ver_tag}"
+    url="https://github.com/${repo}/releases/download/${ver_tag}/${asset}"
+    if curl -fsSL -L "$url" -o "$dest" 2>/dev/null && [[ -s "$dest" ]]; then
+      chmod +x "$dest"
+      WDTT_RELEASE_TAG="$ver_tag"
+      return 0
+    fi
+  fi
+
   if [[ "$tag" == "latest" ]]; then
     api="https://api.github.com/repos/${repo}/releases/latest"
   else
     api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
   fi
-  json="$(curl -fsSL "$api" 2>/dev/null)" || return 1
-  tag="$(echo "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\(v[^"]*\)".*/\1/' || true)"
+  json="$(curl -fsSL -H "User-Agent: wdtt-install" "$api" 2>/dev/null)" || return 1
+  ver_tag="$(echo "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\(v[^"]*\)".*/\1/' || true)"
   url="$(echo "$json" | grep -oE "https://[^\"]+/${asset}[^\"]*" | head -1 | tr -d '"')"
   [[ -n "$url" ]] || return 1
-  curl -fsSL "$url" -o "$dest"
+  curl -fsSL -L "$url" -o "$dest" || return 1
   chmod +x "$dest"
-  [[ -n "$tag" ]] && WDTT_RELEASE_TAG="$tag"
+  [[ -n "$ver_tag" ]] && WDTT_RELEASE_TAG="$ver_tag"
   return 0
 }
 
@@ -971,9 +993,7 @@ verify_wdtt_binary() {
 build_wdtt() {
   local tag="${1:-latest}"
   step "Установка wdtt (server+panel)${tag:+ (${tag})}..."
-  local src="${BUILD_DIR}/wdtt"
-  clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag" 2>/dev/null; then
+  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag"; then
     migrate_wdtt_binary_layout
     install -m 0755 /tmp/wdtt-dl "$WDTT_BIN"
     rm -f /tmp/wdtt-dl
@@ -983,7 +1003,13 @@ build_wdtt() {
   fi
   warn "Не удалось скачать wdtt-linux-${ARCH} из GitHub Releases — сборка из исходников"
   command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Проверьте curl/GitHub или установите golang"; exit 1; }
-  (cd "$src" && chmod +x build.sh scripts/bundle-panel-core.sh && WDTT_SKIP_BUNDLE=1 ./build.sh "$ARCH" unified)
+  local src="${BUILD_DIR}/wdtt"
+  clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
+  local version="${SELECTED_TAG:-${WDTT_RELEASE_TAG:-1.4.23}}"
+  version="${version#v}"
+  (cd "$src" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+    go build -trimpath -ldflags="-s -w -X wdtt-panel.panelVersion=${version}" \
+    -o "wdtt-linux-${ARCH}" ./cmd/wdtt)
   migrate_wdtt_binary_layout
   install -m 0755 "${src}/wdtt-linux-${ARCH}" "$WDTT_BIN"
   verify_wdtt_binary
