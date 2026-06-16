@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.22"
+INSTALLER_VERSION="1.4.23"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -951,8 +951,8 @@ download_release_binary() {
     api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
   fi
   json="$(curl -fsSL "$api" 2>/dev/null)" || return 1
-  tag="$(echo "$json" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1 || true)"
-  url="$(echo "$json" | grep -oE "https://[^\"]+/${asset}(\?[^\"]*)?\"" | head -1 | tr -d '"')"
+  tag="$(echo "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\(v[^"]*\)".*/\1/' || true)"
+  url="$(echo "$json" | grep -oE "https://[^\"]+/${asset}[^\"]*" | head -1 | tr -d '"')"
   [[ -n "$url" ]] || return 1
   curl -fsSL "$url" -o "$dest"
   chmod +x "$dest"
@@ -981,8 +981,9 @@ build_wdtt() {
     info "wdtt скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
     return
   fi
-  command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Установите golang или создайте Release"; exit 1; }
-  (cd "$src" && chmod +x build.sh && ./build.sh "$ARCH" unified)
+  warn "Не удалось скачать wdtt-linux-${ARCH} из GitHub Releases — сборка из исходников"
+  command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Проверьте curl/GitHub или установите golang"; exit 1; }
+  (cd "$src" && chmod +x build.sh scripts/bundle-panel-core.sh && WDTT_SKIP_BUNDLE=1 ./build.sh "$ARCH" unified)
   migrate_wdtt_binary_layout
   install -m 0755 "${src}/wdtt-linux-${ARCH}" "$WDTT_BIN"
   verify_wdtt_binary
