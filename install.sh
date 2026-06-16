@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.35"
+INSTALLER_VERSION="1.4.36"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -407,9 +407,9 @@ pkg_install() {
 install_deps() {
   step "Установка зависимостей..."
   case "$PKG_MGR" in
-    apt) pkg_install ca-certificates curl git iproute2 iptables procps psmisc unzip wget wireguard-tools ;;
-    dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc unzip wget wireguard-tools ;;
-    pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc unzip wget wireguard-tools ;;
+    apt) pkg_install ca-certificates curl git iproute2 iptables procps psmisc sqlite3 unzip wget wireguard-tools ;;
+    dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc sqlite unzip wget wireguard-tools ;;
+    pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc sqlite unzip wget wireguard-tools ;;
   esac
   if command -v tc >/dev/null 2>&1; then
     info "tc (iproute2) — лимиты скорости VPN доступны"
@@ -576,14 +576,26 @@ gen_password() {
 read_existing_password() {
   local db="${CONFIG_DIR}/panel.db"
   local p=""
-  if [[ -f "$db" ]] && command -v sqlite3 >/dev/null; then
-    p="$(sqlite3 "$db" "SELECT main_password FROM wdtt_global WHERE id=1;" 2>/dev/null || true)"
+  if [[ -f "$db" ]]; then
+    if command -v sqlite3 >/dev/null; then
+      p="$(sqlite3 "$db" "SELECT main_password FROM wdtt_global WHERE id=1;" 2>/dev/null || true)"
+    elif command -v python3 >/dev/null; then
+      p="$(python3 - "$db" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+r = c.execute("SELECT main_password FROM wdtt_global WHERE id=1").fetchone()
+if r and r[0]:
+    print(r[0])
+PY
+      )"
+    fi
     [[ -n "$p" ]] && echo "$p" && return 0
   fi
   p="$(readDeployEnvValue "${CONFIG_DIR}/install-main-password.env" "MAIN_PASSWORD")"
   [[ -n "$p" ]] && echo "$p" && return 0
   if [[ -f /etc/systemd/system/wdtt.service ]]; then
-    grep -oP "(?<=-password ')[^']+|(?<=-password )\S+" /etc/systemd/system/wdtt.service 2>/dev/null | head -1
+    p="$(grep -oP "(?<=-password ')[^']+|(?<=-password )\S+" /etc/systemd/system/wdtt.service 2>/dev/null | head -1 || true)"
+    [[ -n "$p" ]] && echo "$p"
   fi
 }
 
