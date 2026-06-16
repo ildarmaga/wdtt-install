@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.27"
+INSTALLER_VERSION="1.4.28"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -971,15 +971,8 @@ verify_wdtt_binary() {
 build_wdtt() {
   local tag="${1:-latest}"
   step "Установка wdtt (server+panel)${tag:+ (${tag})}..."
-  local src="${BUILD_DIR}/wdtt"
-  clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag" 2>/dev/null; then
-    :
-  elif [[ "$tag" != "latest" ]]; then
-    warn "Release ${tag} не найден — пробуем latest"
-    download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "latest" 2>/dev/null || true
-  fi
-  if [[ -s /tmp/wdtt-dl ]]; then
+  rm -f /tmp/wdtt-dl
+  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag" 2>/dev/null && [[ -s /tmp/wdtt-dl ]]; then
     migrate_wdtt_binary_layout
     install -m 0755 /tmp/wdtt-dl "$WDTT_BIN"
     rm -f /tmp/wdtt-dl
@@ -987,12 +980,27 @@ build_wdtt() {
     info "wdtt скачан из GitHub Releases (${WDTT_RELEASE_TAG:-latest})"
     return
   fi
-  command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Установите golang или создайте Release"; exit 1; }
-  (cd "$src" && chmod +x build.sh && ./build.sh "$ARCH" unified)
+  if [[ "$tag" != "latest" ]]; then
+    warn "Release ${tag} не найден — сборка из исходников (без fallback на older latest)"
+  else
+    warn "Не удалось скачать wdtt-linux-${ARCH} — сборка из исходников"
+  fi
+  command -v go >/dev/null || { err "Нет Go и нет release-бинарника. Установите golang или дождитесь GitHub Release"; exit 1; }
+  local src="${BUILD_DIR}/wdtt"
+  clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
+  if [[ "$tag" != "latest" && -d "$src/.git" ]]; then
+    git -C "$src" fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}" 2>>"$LOG_FILE" || true
+    git -C "$src" checkout -f "$tag" 2>>"$LOG_FILE" || git -C "$src" checkout -f "$BRANCH" 2>>"$LOG_FILE" || true
+  fi
+  local version="${tag#v}"
+  [[ -z "$version" || "$version" == "latest" ]] && version="${INSTALLER_VERSION}"
+  (cd "$src" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+    go build -trimpath -ldflags="-s -w -X wdtt-panel.panelVersion=${version}" \
+    -o "wdtt-linux-${ARCH}" ./cmd/wdtt)
   migrate_wdtt_binary_layout
   install -m 0755 "${src}/wdtt-linux-${ARCH}" "$WDTT_BIN"
   verify_wdtt_binary
-  info "wdtt собран из исходников (fallback)"
+  info "wdtt собран из исходников (${version})"
 }
 
 disable_legacy_panel_service() {
