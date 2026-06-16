@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.9"
+INSTALLER_VERSION="1.4.13"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -622,6 +622,26 @@ EOF
   chmod 600 "${CONFIG_DIR}/install-main-password.env"
 }
 
+seed_install_main_password_env() {
+  if [[ -f "${CONFIG_DIR}/panel.db" ]] || [[ -f "${CONFIG_DIR}/install-main-password.env" ]]; then
+    return 0
+  fi
+  local pass="${WDTT_PASSWORD:-}"
+  if [[ -z "$pass" ]]; then
+    pass="$(gen_password)"
+  fi
+  write_install_main_password_env "$pass"
+}
+
+xray_bin_filename() {
+  case "$ARCH" in
+    amd64) echo "xray-linux-amd64" ;;
+    arm64) echo "xray-linux-arm64" ;;
+    armv7) echo "xray-linux-armv7" ;;
+    *) echo "xray-linux-${ARCH}" ;;
+  esac
+}
+
 wdtt_binary_path() {
   if [[ -x "$WDTT_BIN" ]]; then
     echo "$WDTT_BIN"
@@ -1064,7 +1084,7 @@ install_xray_binary() {
   unzip -oq "$zipfile" -d "$extract" || { err "распаковка ${arch_zip} не удалась (проверьте unzip и место в /tmp)"; return 1; }
   xray_bin="$(find "$extract" -name xray -type f | head -1)"
   [[ -n "$xray_bin" ]] || { err "xray binary not found in ${arch_zip}"; return 1; }
-  install -m 0755 "$xray_bin" "${XRAY_BIN_DIR}/xray-linux-amd64"
+  install -m 0755 "$xray_bin" "${XRAY_BIN_DIR}/$(xray_bin_filename)"
   curl -fsSL -o "${XRAY_BIN_DIR}/geoip.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
   curl -fsSL -o "${XRAY_BIN_DIR}/geosite.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
   info "Xray ${tag} установлен"
@@ -1096,7 +1116,7 @@ BindsTo=wdtt.service
 Type=simple
 Environment=XRAY_LOCATION_ASSET=${XRAY_BIN_DIR}
 ExecStartPre=/usr/bin/env bash -c 'for i in \$(seq 1 30); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && exit 0; sleep 0.5; done; exit 1'
-ExecStart=${XRAY_BIN_DIR}/xray-linux-amd64 run -c ${XRAY_CONFIG_DIR}/config.json
+ExecStart=${XRAY_BIN_DIR}/$(xray_bin_filename) run -c ${XRAY_CONFIG_DIR}/config.json
 ExecStartPost=/usr/bin/env bash -c 'sleep 1; /usr/local/bin/wdtt-xray-rules.sh up'
 ExecStopPost=-/usr/local/bin/wdtt-xray-rules.sh down
 Restart=always
@@ -1232,7 +1252,7 @@ cmd_update() {
   fi
 
   if [[ "$WITH_XRAY" == "1" ]]; then
-    if [[ ! -x "${XRAY_BIN_DIR}/xray-linux-amd64" ]]; then
+    if [[ ! -x "${XRAY_BIN_DIR}/$(xray_bin_filename)" ]]; then
       install_xray_binary
       install_xray_config
     else
@@ -1516,9 +1536,15 @@ ui_line
 echo ""
 
 if [[ -z "$WDTT_PASSWORD" ]]; then
-  WDTT_PASSWORD="$(gen_password)"
-  info "Сгенерирован пароль VPN: ${bold}${WDTT_PASSWORD}${plain}  ${dim}(сохраните!)${plain}"
-  echo ""
+  if [[ -f "${CONFIG_DIR}/panel.db" ]] || [[ -f "${CONFIG_DIR}/install-main-password.env" ]]; then
+    WDTT_PASSWORD="$(read_existing_password)"
+    [[ -n "$WDTT_PASSWORD" ]] && info "VPN пароль из panel.db ${dim}(без изменений)${plain}"
+  fi
+  if [[ -z "$WDTT_PASSWORD" ]]; then
+    WDTT_PASSWORD="$(gen_password)"
+    info "Сгенерирован пароль VPN: ${bold}${WDTT_PASSWORD}${plain}  ${dim}(сохраните!)${plain}"
+    echo ""
+  fi
 fi
 
 detect_os
@@ -1530,7 +1556,7 @@ build_wdtt
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
-write_install_main_password_env "$WDTT_PASSWORD"
+seed_install_main_password_env
 install_wdtt_service "$WDTT_PASSWORD"
 
 if [[ "$WITH_XRAY" == "1" ]]; then

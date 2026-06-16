@@ -18,9 +18,9 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.4.9** (совпадает с линейкой релизов wdtt).
+В шапке установщика: **installer v1.4.13** (совпадает с линейкой релизов wdtt).
 
-**Рекомендуется wdtt ≥ v1.4.9** (unified, in-process restart, minimal systemd unit).
+**Рекомендуется wdtt ≥ v1.4.13** (unified, in-process restart, minimal systemd unit).
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (в `panel.db`, не в systemd);
