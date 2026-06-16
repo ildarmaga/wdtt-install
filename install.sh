@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.13"
+INSTALLER_VERSION="1.4.22"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -274,7 +274,7 @@ ui_show_help() {
   ui_kv "CLI" "wdtt restart | stop | start | uninstall | purge"
   echo ""
   ui_kv "Опции" "--password, --direct, --no-panel"
-  ui_kv "Версия" "install update --version v1.4.0"
+  ui_kv "Версия" "wdtt update --version v1.4.22"
   ui_kv "Авто" "install --no-menu"
   echo ""
   ui_press_enter
