@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.25"
+INSTALLER_VERSION="1.4.26"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -993,7 +993,13 @@ verify_wdtt_binary() {
 build_wdtt() {
   local tag="${1:-latest}"
   step "Установка wdtt (server+panel)${tag:+ (${tag})}..."
-  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag"; then
+  if download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "$tag" 2>/dev/null; then
+    :
+  elif [[ "$tag" != "latest" ]]; then
+    warn "Release ${tag} не найден — пробуем latest"
+    download_release_binary "${GITHUB_USER}/wdtt" "wdtt-linux" "/tmp/wdtt-dl" "latest" 2>/dev/null || true
+  fi
+  if [[ -s /tmp/wdtt-dl ]]; then
     migrate_wdtt_binary_layout
     install -m 0755 /tmp/wdtt-dl "$WDTT_BIN"
     rm -f /tmp/wdtt-dl
@@ -1582,7 +1588,7 @@ setup_firewall
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 seed_install_main_password_env
-build_wdtt
+build_wdtt "v${INSTALLER_VERSION}"
 
 install_wdtt_service "$WDTT_PASSWORD"
 
