@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.36"
+INSTALLER_VERSION="1.4.49"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -407,7 +407,7 @@ pkg_install() {
 install_deps() {
   step "Установка зависимостей..."
   case "$PKG_MGR" in
-    apt) pkg_install ca-certificates curl git iproute2 iptables procps psmisc sqlite3 unzip wget wireguard-tools ;;
+    apt) pkg_install ca-certificates curl file git iproute2 iptables procps psmisc sqlite3 unzip wget wireguard-tools ;;
     dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc sqlite unzip wget wireguard-tools ;;
     pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc sqlite unzip wget wireguard-tools ;;
   esac
@@ -972,12 +972,22 @@ download_release_binary() {
   return 0
 }
 
+is_elf_binary() {
+  local magic
+  magic="$(head -c 4 "$1" 2>/dev/null || true)"
+  [[ "$magic" == $'\x7fELF' ]]
+}
+
 verify_wdtt_binary() {
   [[ -x "$WDTT_BIN" ]] || { err "Бинарник не установлен: ${WDTT_BIN}"; exit 1; }
-  if ! file "$WDTT_BIN" 2>/dev/null | grep -q ELF; then
-    err "Не ELF: ${WDTT_BIN}"
-    exit 1
+  if is_elf_binary "$WDTT_BIN"; then
+    return 0
   fi
+  if command -v file >/dev/null 2>&1 && file -b "$WDTT_BIN" 2>/dev/null | grep -qE 'ELF|executable'; then
+    return 0
+  fi
+  err "Не ELF: ${WDTT_BIN} (битая загрузка или нет пакета file — apt install file)"
+  exit 1
 }
 
 build_wdtt() {
