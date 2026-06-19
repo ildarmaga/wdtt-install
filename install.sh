@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.49"
+INSTALLER_VERSION="1.4.50"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -493,12 +493,21 @@ PY
 }
 
 setup_sysctl() {
-  step "Настройка ip_forward..."
+  step "Настройка ip_forward + BBR..."
   mkdir -p /etc/sysctl.d
   cat > /etc/sysctl.d/99-wdtt.conf <<'EOF'
 net.ipv4.ip_forward = 1
+# BBR + fq: выше throughput и стабильнее латентность под потерями
+# (туннель идёт по «замаскированному» пути с потерями — как QUIC/BBR у VK)
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 EOF
   sysctl -p /etc/sysctl.d/99-wdtt.conf >/dev/null 2>&1 || true
+  # Подтянуть модуль tcp_bbr, если не активен (на части ядер не autoload)
+  if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+    modprobe tcp_bbr 2>/dev/null || true
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+  fi
 }
 
 install_mtu_rules_script() {
