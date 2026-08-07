@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.50"
+INSTALLER_VERSION="1.4.72"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -25,6 +25,9 @@ GITHUB_USER="${WDTT_GITHUB_USER:-ildarmaga}"
 REPO_WDTT="${WDTT_REPO:-https://github.com/${GITHUB_USER}/wdtt.git}"
 REPO_INSTALL="${WDTT_REPO_INSTALL:-https://github.com/${GITHUB_USER}/wdtt-install.git}"
 BRANCH="${WDTT_BRANCH:-main}"
+# Опционально: GITHUB_TOKEN / WDTT_GITHUB_TOKEN — обход rate limit API (403/60 req/h)
+GITHUB_TOKEN="${WDTT_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+CURL_UA="wdtt-install/${INSTALLER_VERSION} (+https://github.com/${GITHUB_USER}/wdtt-install)"
 
 DTLS_PORT="${WDTT_DTLS_PORT:-56000}"
 WG_PORT="${WDTT_WG_PORT:-56001}"
@@ -716,10 +719,60 @@ is_wdtt_installed() {
   [[ -f /etc/systemd/system/wdtt.service ]] && wdtt_binary_path >/dev/null
 }
 
+# curl к api.github.com / github.com с UA (без UA часто 403) и опциональным токеном.
+github_curl() {
+  local url="$1"; shift
+  local -a args=(-fsSL -A "$CURL_UA" -H "Accept: application/vnd.github+json")
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+  curl "${args[@]}" "$@" "$url"
+}
+
+# Из JSON вытащить ВСЕ значения строкового поля (portable, без grep -P / jq).
+# Важно: api.github.com часто отдаёт JSON в одну строку — sed с жадным .* оставит только последний match.
+json_string_field() {
+  local field="$1"
+  grep -oE "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" | sed -E "s/^\"${field}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\"$/\\1/"
+}
+
+# Скачать URL во файл; код ответа → _GITHUB_HTTP_CODE. Не использует subshell для кода.
+github_api_download() {
+  local url="$1" dest="$2"
+  local http
+  local -a args=(-sS -A "$CURL_UA" -H "Accept: application/vnd.github+json" -o "$dest" -w "%{http_code}")
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+  http="$(curl "${args[@]}" "$url" 2>/dev/null || echo "000")"
+  _GITHUB_HTTP_CODE="$http"
+  [[ "$http" == "200" && -s "$dest" ]]
+}
+
 fetch_release_tags() {
   local limit="${1:-20}"
-  curl -fsSL "https://api.github.com/repos/${GITHUB_USER}/wdtt/releases?per_page=${limit}" 2>/dev/null | \
-    grep -oP '"tag_name":\s*"\K[^"]+' || true
+  local tmp tags=""
+  _GITHUB_HTTP_CODE=""
+  tmp="$(mktemp)" || return 1
+  if github_api_download "https://api.github.com/repos/${GITHUB_USER}/wdtt/releases?per_page=${limit}" "$tmp"; then
+    tags="$(json_string_field tag_name < "$tmp")"
+  fi
+  if [[ -z "$tags" ]]; then
+    if github_api_download "https://api.github.com/repos/${GITHUB_USER}/wdtt/tags?per_page=${limit}" "$tmp"; then
+      tags="$(json_string_field name < "$tmp" | grep -E '^v?[0-9]' || true)"
+    fi
+  fi
+  rm -f "$tmp"
+  if [[ -z "$tags" ]] && command -v git >/dev/null 2>&1; then
+    tags="$(git ls-remote --tags --refs "https://github.com/${GITHUB_USER}/wdtt.git" 2>/dev/null \
+      | awk '{print $2}' | sed 's|refs/tags/||' | sort -V -r | head -n "$limit" || true)"
+    [[ -n "$tags" ]] && _GITHUB_HTTP_CODE="git-ls-remote"
+  fi
+  if [[ -z "$tags" ]]; then
+    return 1
+  fi
+  # Не pipe в head под pipefail — иначе SIGPIPE валит fetch при limit < числу тегов.
+  printf '%s\n' "$tags" | awk -v n="$limit" 'NF {print; if (++c >= n) exit}'
 }
 
 # Релизы до v1.4.0 — без unified wdtt-linux, не показываем в выборе версии.
@@ -744,13 +797,23 @@ filter_release_tags_since_db() {
 pick_release_version() {
   local -a tags=()
   local tag current i choice mark label
+  local fetch_err="" tags_file
 
-  mapfile -t tags < <(fetch_release_tags 20)
+  # Без process-substitution: иначе _GITHUB_HTTP_CODE теряется в subshell.
+  tags_file="$(mktemp)" || { err "mktemp"; exit 1; }
+  if fetch_release_tags 20 >"$tags_file"; then
+    mapfile -t tags < "$tags_file"
+  else
+    fetch_err="ответ ${_GITHUB_HTTP_CODE:-?} от api.github.com"
+  fi
+  rm -f "$tags_file"
   if ((${#tags[@]} > 0)); then
     mapfile -t tags < <(filter_release_tags_since_db "${tags[@]}")
   fi
   if [[ ${#tags[@]} -eq 0 ]]; then
-    err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)"
+    err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)${fetch_err:+ — ${fetch_err}}"
+    echo -e "  ${dim}Частые причины: rate limit / 403, блокировка API с VPS.${plain}" >&2
+    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.4.72 wdtt update${plain}" >&2
     exit 1
   fi
 
@@ -971,11 +1034,12 @@ download_release_binary() {
   else
     api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
   fi
-  json="$(curl -fsSL "$api" 2>/dev/null)" || return 1
-  tag="$(echo "$json" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1 || true)"
-  url="$(echo "$json" | grep -oE "https://[^\"]+/${asset}(\?[^\"]*)?\"" | head -1 | tr -d '"')"
+  json="$(github_curl "$api" 2>/dev/null)" || return 1
+  tag="$(printf '%s\n' "$json" | json_string_field tag_name | head -1 || true)"
+  # browser_download_url …/wdtt-linux-amd64
+  url="$(printf '%s\n' "$json" | grep -oE "https://[^\"]+/${asset}(\?[^\"]*)?" | head -1 || true)"
   [[ -n "$url" ]] || return 1
-  curl -fsSL "$url" -o "$dest"
+  github_curl "$url" -o "$dest" || return 1
   chmod +x "$dest"
   [[ -n "$tag" ]] && WDTT_RELEASE_TAG="$tag"
   return 0
@@ -1116,22 +1180,23 @@ install_xray_binary() {
     arm64) arch_zip="Xray-linux-arm64-v8a.zip" ;;
     armv7) arch_zip="Xray-linux-arm32-v7a.zip" ;;
   esac
-  local tag
-  tag="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)"
+  local tag json
+  json="$(github_curl "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null || true)"
+  tag="$(printf '%s\n' "$json" | json_string_field tag_name | head -1 || true)"
   [[ -n "$tag" ]] || tag="v26.4.25"
   url="https://github.com/XTLS/Xray-core/releases/download/${tag}/${arch_zip}"
   tmpdir="$(mktemp -d /tmp/wdtt-xray.XXXXXX)" || { err "не удалось создать временный каталог"; return 1; }
   zipfile="${tmpdir}/xray.zip"
   extract="${tmpdir}/extract"
   trap 'rm -rf "$tmpdir"' RETURN
-  curl -fsSL "$url" -o "$zipfile"
+  github_curl "$url" -o "$zipfile" || { err "скачивание Xray ${tag}: HTTP/сеть (часто 403 без UA — обновите install.sh)"; return 1; }
   mkdir -p "$extract"
   unzip -oq "$zipfile" -d "$extract" || { err "распаковка ${arch_zip} не удалась (проверьте unzip и место в /tmp)"; return 1; }
   xray_bin="$(find "$extract" -name xray -type f | head -1)"
   [[ -n "$xray_bin" ]] || { err "xray binary not found in ${arch_zip}"; return 1; }
   install -m 0755 "$xray_bin" "${XRAY_BIN_DIR}/$(xray_bin_filename)"
-  curl -fsSL -o "${XRAY_BIN_DIR}/geoip.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
-  curl -fsSL -o "${XRAY_BIN_DIR}/geosite.dat" "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+  github_curl "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o "${XRAY_BIN_DIR}/geoip.dat" || true
+  github_curl "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -o "${XRAY_BIN_DIR}/geosite.dat" || true
   info "Xray ${tag} установлен"
 }
 
@@ -1507,8 +1572,10 @@ while [[ $# -gt 0 ]]; do
 WDTT Installer v${INSTALLER_VERSION}
 
 Установка (SHA обходит CDN-кэш GitHub):
-  SHA=\$(curl -fsSL https://api.github.com/repos/${GITHUB_USER}/wdtt-install/commits/main | sed -n 's/.*"sha": "\\([0-9a-f]\\{40\\}\\)".*/\\1/p' | head -1)
-  bash <(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/\${SHA}/install.sh")
+  SHA=\$(curl -fsSL -A wdtt-install https://api.github.com/repos/${GITHUB_USER}/wdtt-install/commits/main | grep -oE '"sha"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' | head -1 | cut -d'"' -f4)
+  bash <(curl -fsSL -A wdtt-install "https://raw.githubusercontent.com/${GITHUB_USER}/wdtt-install/\${SHA}/install.sh")
+
+При ошибке списка версий: export GITHUB_TOKEN=... или WDTT_VERSION=v${INSTALLER_VERSION} wdtt update
 
 Меню: wdtt menu  (всегда свежий скрипт с GitHub)
 
@@ -1611,7 +1678,9 @@ setup_firewall
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 seed_install_main_password_env
-build_wdtt "v${INSTALLER_VERSION}"
+# Свежая установка — всегда latest (или WDTT_VERSION), не пин INSTALLER_VERSION.
+# Иначе при отставании install.sh (как 1.4.50) качали несуществующий release / старый src.
+build_wdtt "${WDTT_VERSION:-latest}"
 install_wdtt_service "$WDTT_PASSWORD"
 
 if [[ "$WITH_XRAY" == "1" ]]; then
