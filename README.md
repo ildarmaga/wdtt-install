@@ -18,7 +18,7 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.4.72** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
+В шапке установщика: **installer v1.4.123** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
 
 **Рекомендуется wdtt ≥ v1.4.49** (unified server+panel, minimal systemd unit). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
 
@@ -27,7 +27,7 @@ wdtt menu
 - **xray** и **веб-панель** устанавливаются сами;
 - если WDTT уже установлен — запускается **обновление** с выбором версии из GitHub Releases.
 
-Если `wdtt update` пишет «не удалось получить список версий» — обычно rate limit / 403 GitHub API с VPS. Обход: `export GITHUB_TOKEN=ghp_...` или `WDTT_VERSION=v1.4.72 wdtt update`.
+Если `wdtt update` пишет «не удалось получить список версий» — обычно rate limit / 403 GitHub API с VPS. Обход: `export GITHUB_TOKEN=ghp_...` или `WDTT_VERSION=v1.4.123 wdtt update`.
 
 Свой пароль (опционально):
 
