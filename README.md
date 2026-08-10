@@ -18,16 +18,16 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.4.123** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
+В шапке установщика: **installer v1.4.79** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
 
-**Рекомендуется wdtt ≥ v1.4.49** (unified server+panel, minimal systemd unit). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
+**Рекомендуется wdtt ≥ v1.4.75** (RAW UDP порт в панели; unified ≥ v1.4.49) (unified server+panel, minimal systemd unit). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (в `panel.db`, не в systemd);
 - **xray** и **веб-панель** устанавливаются сами;
 - если WDTT уже установлен — запускается **обновление** с выбором версии из GitHub Releases.
 
-Если `wdtt update` пишет «не удалось получить список версий» — обычно rate limit / 403 GitHub API с VPS. Обход: `export GITHUB_TOKEN=ghp_...` или `WDTT_VERSION=v1.4.123 wdtt update`.
+Если `wdtt update` пишет «не удалось получить список версий» — обычно rate limit / 403 GitHub API с VPS. Обход: `export GITHUB_TOKEN=ghp_...` или `WDTT_VERSION=v1.4.79 wdtt update`.
 
 Свой пароль (опционально):
 
@@ -82,7 +82,7 @@ status | uninstall | purge
 - `wdtt uninstall` — сервисы и бинарники; `/etc/wdtt` сохраняется
 - `wdtt purge` — **полное удаление**: `/etc/wdtt`, `/etc/wdtt-xray`, NAT, firewall, логи
 
-Переменные: `WDTT_GITHUB_USER`, `WDTT_VERSION`, `WDTT_DTLS_PORT`, `WDTT_WG_PORT`, `WDTT_PANEL_PORT`.
+Переменные: `WDTT_GITHUB_USER`, `WDTT_VERSION`, `WDTT_DTLS_PORT`, `WDTT_WG_PORT`, `WDTT_RAW_PORT` (по умолчанию DTLS+3), `WDTT_PANEL_PORT`.
 
 ## После установки
 

@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.128"
+INSTALLER_VERSION="1.4.79"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -31,6 +31,8 @@ CURL_UA="wdtt-install/${INSTALLER_VERSION} (+https://github.com/${GITHUB_USER}/w
 
 DTLS_PORT="${WDTT_DTLS_PORT:-56000}"
 WG_PORT="${WDTT_WG_PORT:-56001}"
+# RAW direct WRAP (no DTLS): по умолчанию DTLS+3 (56000→56003). Сервер ≥1.4.75.
+RAW_DIRECT_PORT="${WDTT_RAW_PORT:-}"
 SSH_PORT="${WDTT_SSH_PORT:-22}"
 IFACE="wdtt0"
 IPT_COMMENT="WDTT_MANAGED"
@@ -472,12 +474,21 @@ detect_wan() {
   ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1
 }
 
+
+# Эффективный RAW UDP: явный WDTT_RAW_PORT / raw_direct_port, иначе DTLS+3.
+normalize_raw_direct_port() {
+  if [[ -z "${RAW_DIRECT_PORT:-}" || "${RAW_DIRECT_PORT}" -le 0 ]]; then
+    RAW_DIRECT_PORT=$((DTLS_PORT + 3))
+  fi
+}
+
 read_panel_ports_from_db() {
   local db="${CONFIG_DIR}/panel.db"
-  [[ -f "$db" ]] || return 0
-  local row=""
+  [[ -f "$db" ]] || { normalize_raw_direct_port; return 0; }
+  local row="" vpn=""
   if command -v sqlite3 >/dev/null; then
     row="$(sqlite3 "$db" "SELECT port, sub_port FROM panel_config WHERE id=1;" 2>/dev/null || true)"
+    vpn="$(sqlite3 "$db" "SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0) FROM wdtt_inbound WHERE id=1;" 2>/dev/null || true)"
   elif command -v python3 >/dev/null; then
     row="$(python3 - "$db" <<'PY' 2>/dev/null || true
 import sqlite3, sys
@@ -487,12 +498,32 @@ if r:
     print(f"{r[0]}|{r[1]}")
 PY
     )"
+    vpn="$(python3 - "$db" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+try:
+    r = c.execute("SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0) FROM wdtt_inbound WHERE id=1").fetchone()
+except Exception:
+    r = None
+if r:
+    print(f"{r[0]}|{r[1]}|{r[2]}")
+PY
+    )"
   fi
   if [[ -n "$row" ]]; then
     IFS='|' read -r db_panel db_sub <<< "$row"
     [[ -n "$db_panel" && "$db_panel" -gt 0 ]] && PANEL_PORT="$db_panel"
     [[ -n "$db_sub" && "$db_sub" -gt 0 ]] && SUB_PORT="$db_sub"
   fi
+  if [[ -n "$vpn" ]]; then
+    IFS='|' read -r db_dtls db_wg db_raw <<< "$vpn"
+    [[ -n "$db_dtls" && "$db_dtls" -gt 0 ]] && DTLS_PORT="$db_dtls"
+    [[ -n "$db_wg" && "$db_wg" -gt 0 ]] && WG_PORT="$db_wg"
+    if [[ -n "$db_raw" && "$db_raw" -gt 0 ]]; then
+      RAW_DIRECT_PORT="$db_raw"
+    fi
+  fi
+  normalize_raw_direct_port
 }
 
 setup_sysctl() {
@@ -532,9 +563,11 @@ setup_firewall() {
   read_panel_ports_from_db
   local wan; wan="$(detect_wan)"
   [[ -n "$wan" ]] || { warn "WAN не определён"; return; }
+  normalize_raw_direct_port
   for rule in \
     "INPUT -p udp --dport $DTLS_PORT" \
     "INPUT -p udp --dport $WG_PORT" \
+    "INPUT -p udp --dport $RAW_DIRECT_PORT" \
     "INPUT -p tcp --dport $SSH_PORT" \
     "INPUT -p tcp --dport $PANEL_PORT" \
     "INPUT -i $IFACE -p tcp --dport $PANEL_PORT" \
@@ -626,10 +659,12 @@ readDeployEnvValue() {
 
 write_install_inbound_env() {
   mkdir -p "$CONFIG_DIR"
+  normalize_raw_direct_port
   cat > "${CONFIG_DIR}/install-inbound.env" <<EOF
 # Порты для seed panel.db (install.sh). Дальше — только через панель → Подключения.
 DTLS_PORT=${DTLS_PORT}
 WG_PORT=${WG_PORT}
+RAW_DIRECT_PORT=${RAW_DIRECT_PORT}
 EOF
   chmod 644 "${CONFIG_DIR}/install-inbound.env"
 }
@@ -813,7 +848,7 @@ pick_release_version() {
   if [[ ${#tags[@]} -eq 0 ]]; then
     err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)${fetch_err:+ — ${fetch_err}}"
     echo -e "  ${dim}Частые причины: rate limit / 403, блокировка API с VPS.${plain}" >&2
-    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.4.72 wdtt update${plain}" >&2
+    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.4.79 wdtt update${plain}" >&2
     exit 1
   fi
 
@@ -1133,6 +1168,7 @@ PY
 
 install_wdtt_service() {
   local pass="$1"
+  normalize_raw_direct_port
   write_install_inbound_env
   local exec_args="-config-dir ${CONFIG_DIR}"
   if [[ "$WITH_PANEL" != "1" ]]; then
@@ -1140,7 +1176,7 @@ install_wdtt_service() {
   fi
   local ipt_pre
   ipt_pre=$(cat <<IPT
-ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; fi"
+ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; fi"
 IPT
 )
   cat > /etc/systemd/system/wdtt.service <<EOF
@@ -1273,8 +1309,10 @@ print_summary() {
   ui_banner
   ui_success_box "Установка завершена успешно"
   echo ""
+  normalize_raw_direct_port
   ui_kv "DTLS порт" "${DTLS_PORT}/udp"
   ui_kv "WG порт" "${WG_PORT}/udp"
+  ui_kv "RAW порт" "${RAW_DIRECT_PORT}/udp"
   ui_kv "VPN пароль" "${WDTT_PASSWORD}"
   if [[ "$WITH_PANEL" == "1" ]]; then
     echo ""
@@ -1438,9 +1476,11 @@ cleanup_firewall_wdtt() {
   command -v iptables >/dev/null || return 0
   step "Удаление правил firewall и NAT..."
   read_panel_ports_from_db
+  normalize_raw_direct_port
   local wan port_specs=(
     "${DTLS_PORT}:udp"
     "${WG_PORT}:udp"
+    "${RAW_DIRECT_PORT}:udp"
     "${SSH_PORT}:tcp"
     "${PANEL_PORT}:tcp"
     "${SUB_PORT}:tcp"
@@ -1592,7 +1632,7 @@ WDTT Installer v${INSTALLER_VERSION}
   uninstall  — сервисы и бинарники; /etc/wdtt сохраняется
   purge      — полное удаление: конфиги, NAT, firewall, логи
 
-Переменные: WDTT_GITHUB_USER, WDTT_VERSION, WDTT_NO_MENU=1
+Переменные: WDTT_GITHUB_USER, WDTT_VERSION, WDTT_RAW_PORT, WDTT_NO_MENU=1
 EOF
       exit 0
       ;;
