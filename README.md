@@ -20,7 +20,7 @@ wdtt menu
 
 В шапке установщика: **installer v1.4.79** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
 
-**Рекомендуется wdtt ≥ v1.4.75** (RAW UDP порт в панели; unified ≥ v1.4.49) (unified server+panel, minimal systemd unit). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
+**Рекомендуется wdtt ≥ v1.4.75** (RAW UDP порт в панели; unified server+panel ≥ v1.4.49). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (в `panel.db`, не в systemd);
