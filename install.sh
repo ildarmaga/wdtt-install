@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.84"
+INSTALLER_VERSION="1.4.86"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -910,8 +910,9 @@ fetch_release_tags() {
   if [[ -z "$tags" ]]; then
     return 1
   fi
+  # Semver desc: GitHub /releases идёт по created_at, не по номеру версии.
   # Не pipe в head под pipefail — иначе SIGPIPE валит fetch при limit < числу тегов.
-  printf '%s\n' "$tags" | awk -v n="$limit" 'NF {print; if (++c >= n) exit}'
+  printf '%s\n' "$tags" | sed '/^$/d' | sort -V -r | awk -v n="$limit" 'NF {print; if (++c >= n) exit}'
 }
 
 # Релизы до v1.4.0 — без unified wdtt-linux, не показываем в выборе версии.
