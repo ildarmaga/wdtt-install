@@ -10,6 +10,31 @@ RAW_NET="${WDTT_RAW_NET:-10.70.0.0/16}"
 IPT_COMMENT="${WDTT_IPT_COMMENT:-WDTT_MANAGED}"
 DEFAULT_MTU="${WDTT_DEFAULT_MTU:-1280}"
 
+is_private_ipv4_cidr() {
+    local cidr="${1:-}"
+    local o1 o2 o3 o4 prefix
+    [[ "$cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+    o1="${BASH_REMATCH[1]}"; o2="${BASH_REMATCH[2]}"; o3="${BASH_REMATCH[3]}"; o4="${BASH_REMATCH[4]}"
+    prefix="${BASH_REMATCH[5]}"
+    ((10#$o1 <= 255 && 10#$o2 <= 255 && 10#$o3 <= 255 && 10#$o4 <= 255)) || return 1
+    ((10#$prefix >= 8 && 10#$prefix <= 32)) || return 1
+    if ((10#$o1 == 10)); then return 0; fi
+    if ((10#$o1 == 172 && 10#$o2 >= 16 && 10#$o2 <= 31)); then return 0; fi
+    if ((10#$o1 == 192 && 10#$o2 == 168)); then return 0; fi
+    return 1
+}
+
+# Reject shell/nft metacharacters — only validated private CIDR may enter nft heredocs.
+sanitize_nets() {
+    if ! is_private_ipv4_cidr "$WG_NET"; then
+        WG_NET="10.66.66.0/24"
+    fi
+    if ! is_private_ipv4_cidr "$RAW_NET"; then
+        echo "wdtt-mtu: invalid RAW_NET=${RAW_NET} — fallback 10.70.0.0/16" >&2
+        RAW_NET="10.70.0.0/16"
+    fi
+}
+
 detect_wan() {
     ip route get 8.8.8.8 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1
 }
@@ -38,11 +63,27 @@ remove_mss_iptables() {
     fi
 }
 
+remove_all_managed_mss_iptables() {
+    local rule
+    if ! command -v iptables >/dev/null 2>&1; then
+        return 0
+    fi
+    while IFS= read -r rule; do
+        [[ "$rule" == *"--comment ${IPT_COMMENT}"* ]] || continue
+        [[ "$rule" == *"-j TCPMSS"* ]] || continue
+        read -r -a args <<<"$rule"
+        [[ "${args[0]:-}" == "-A" ]] || continue
+        args[0]="-D"
+        iptables -t mangle "${args[@]}" 2>/dev/null || true
+    done < <(iptables -t mangle -S FORWARD 2>/dev/null)
+}
+
 apply_nft_rules() {
     local wan="$1" wg_mtu="$2" raw_mtu="$3"
     if ! command -v nft >/dev/null 2>&1; then
         return 0
     fi
+    sanitize_nets
     nft delete table inet wdtt_mangle 2>/dev/null
     nft -f - <<NFT
 table inet wdtt_mangle {
@@ -70,6 +111,8 @@ NFT
 }
 
 cleanup_mtu_rules() {
+    sanitize_nets
+    remove_all_managed_mss_iptables
     remove_mss_iptables "$WG_NET"
     remove_mss_iptables "$RAW_NET"
     # legacy single-subnet RAW /24 if ever installed
@@ -85,6 +128,7 @@ down)
     exit 0
     ;;
 up)
+    sanitize_nets
     WAN="$(detect_wan)"
     WG_MTU="$(iface_mtu "$IFACE")"
     RAW_MTU="$(iface_mtu "$RAW_IFACE")"

@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.79"
+INSTALLER_VERSION="1.4.84"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -33,9 +33,15 @@ DTLS_PORT="${WDTT_DTLS_PORT:-56000}"
 WG_PORT="${WDTT_WG_PORT:-56001}"
 # RAW direct WRAP (no DTLS): по умолчанию DTLS+3 (56000→56003). Сервер ≥1.4.75.
 RAW_DIRECT_PORT="${WDTT_RAW_PORT:-}"
+# CSQTT peer UDP (WRAP+VKQUIC). Сервер ≥1.4.84.
+CSQTT_PEER_PORT="${WDTT_CSQTT_PORT:-46000}"
+# Shared RAW/CSQTT client subnet (server owns NAT via WDTT_RAW_MANAGED).
+RAW_SUBNET="${WDTT_RAW_NET:-10.70.0.0/16}"
 SSH_PORT="${WDTT_SSH_PORT:-22}"
 IFACE="wdtt0"
+RAW_IFACE="wdtt-raw"
 IPT_COMMENT="WDTT_MANAGED"
+RAW_IPT_COMMENT="WDTT_RAW_MANAGED"
 WDTT_BIN="/usr/local/bin/wdtt-app"
 WDTT_CMD="/usr/local/bin/wdtt"
 
@@ -279,7 +285,7 @@ ui_show_help() {
   ui_kv "CLI" "wdtt restart | stop | start | uninstall | purge"
   echo ""
   ui_kv "Опции" "--password, --direct, --no-panel"
-  ui_kv "Версия" "install update --version v1.4.0"
+  ui_kv "Версия" "install update --version v1.4.84"
   ui_kv "Авто" "install --no-menu"
   echo ""
   ui_press_enter
@@ -351,9 +357,10 @@ ui_press_enter() {
   read -rp "$(echo -e "${dim}  Нажмите Enter для продолжения...${plain}")" _
 }
 
-info()  { echo -e "  ${green}✔${plain} $*"; echo "[OK] $*" >> "$LOG_FILE"; }
-warn()  { echo -e "  ${yellow}⚠${plain} $*"; echo "[WARN] $*" >> "$LOG_FILE"; }
-err()   { echo -e "  ${red}✗${plain} $*"; echo "[ERR] $*" >> "$LOG_FILE"; }
+_log_line() { echo "$*" >> "${LOG_FILE:-/dev/null}" 2>/dev/null || true; }
+info()  { echo -e "  ${green}✔${plain} $*"; _log_line "[OK] $*"; }
+warn()  { echo -e "  ${yellow}⚠${plain} $*"; _log_line "[WARN] $*"; }
+err()   { echo -e "  ${red}✗${plain} $*"; _log_line "[ERR] $*"; }
 step()  { echo -e "  ${blue}▶${plain} $*"; }
 
 INSTALL_TOTAL_STEPS=8
@@ -363,9 +370,11 @@ step_progress() {
   ui_spinner_step "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS" "$1"
 }
 
-[[ $EUID -eq 0 ]] || { err "Запустите от root"; exit 1; }
-mkdir -p "$(dirname "$LOG_FILE")"
-echo "=== WDTT install v${INSTALLER_VERSION} $(date) ===" >> "$LOG_FILE"
+if [[ "${WDTT_INSTALL_LIBONLY:-}" != "1" ]]; then
+  [[ $EUID -eq 0 ]] || { err "Запустите от root"; exit 1; }
+  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  echo "=== WDTT install v${INSTALLER_VERSION} $(date) ===" >> "$LOG_FILE" 2>/dev/null || true
+fi
 
 arch() {
   case "$(uname -m)" in
@@ -477,18 +486,70 @@ detect_wan() {
 
 # Эффективный RAW UDP: явный WDTT_RAW_PORT / raw_direct_port, иначе DTLS+3.
 normalize_raw_direct_port() {
-  if [[ -z "${RAW_DIRECT_PORT:-}" || "${RAW_DIRECT_PORT}" -le 0 ]]; then
+  if [[ -z "${RAW_DIRECT_PORT:-}" ]] || ! is_valid_udp_port "${RAW_DIRECT_PORT}"; then
+    if [[ -n "${RAW_DIRECT_PORT:-}" ]]; then
+      warn "Некорректный RAW_DIRECT_PORT=${RAW_DIRECT_PORT} — использую DTLS+3"
+    fi
     RAW_DIRECT_PORT=$((DTLS_PORT + 3))
+  fi
+}
+
+# UDP/TCP port: digits only, 1..65535 (rejects injection tokens).
+is_valid_udp_port() {
+  local p="${1:-}"
+  [[ "$p" =~ ^[0-9]+$ ]] || return 1
+  ((10#$p >= 1 && 10#$p <= 65535))
+}
+
+normalize_csqtt_peer_port() {
+  if ! is_valid_udp_port "${CSQTT_PEER_PORT:-}"; then
+    if [[ -n "${CSQTT_PEER_PORT:-}" ]]; then
+      warn "Некорректный CSQTT_PEER_PORT=${CSQTT_PEER_PORT} — использую 46000"
+    fi
+    CSQTT_PEER_PORT=46000
+  fi
+}
+
+# Private IPv4 CIDR only (10/8, 172.16–31/12, 192.168/16). Rejects metacharacters.
+is_private_ipv4_cidr() {
+  local cidr="${1:-}"
+  local ip prefix o1 o2 o3 o4
+  [[ "$cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  o1="${BASH_REMATCH[1]}"; o2="${BASH_REMATCH[2]}"; o3="${BASH_REMATCH[3]}"; o4="${BASH_REMATCH[4]}"
+  prefix="${BASH_REMATCH[5]}"
+  ((10#$o1 <= 255 && 10#$o2 <= 255 && 10#$o3 <= 255 && 10#$o4 <= 255)) || return 1
+  ((10#$prefix >= 8 && 10#$prefix <= 32)) || return 1
+  if ((10#$o1 == 10)); then
+    return 0
+  fi
+  if ((10#$o1 == 172 && 10#$o2 >= 16 && 10#$o2 <= 31)); then
+    return 0
+  fi
+  if ((10#$o1 == 192 && 10#$o2 == 168)); then
+    return 0
+  fi
+  return 1
+}
+
+normalize_raw_subnet() {
+  if ! is_private_ipv4_cidr "${RAW_SUBNET:-}"; then
+    if [[ -n "${RAW_SUBNET:-}" ]]; then
+      warn "Некорректный RAW_SUBNET=${RAW_SUBNET} — использую 10.70.0.0/16"
+    fi
+    RAW_SUBNET="10.70.0.0/16"
   fi
 }
 
 read_panel_ports_from_db() {
   local db="${CONFIG_DIR}/panel.db"
-  [[ -f "$db" ]] || { normalize_raw_direct_port; return 0; }
+  [[ -f "$db" ]] || { normalize_raw_direct_port; normalize_csqtt_peer_port; normalize_raw_subnet; return 0; }
   local row="" vpn=""
   if command -v sqlite3 >/dev/null; then
     row="$(sqlite3 "$db" "SELECT port, sub_port FROM panel_config WHERE id=1;" 2>/dev/null || true)"
-    vpn="$(sqlite3 "$db" "SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0) FROM wdtt_inbound WHERE id=1;" 2>/dev/null || true)"
+    vpn="$(sqlite3 "$db" "SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0), COALESCE(csqtt_peer_port,0), COALESCE(raw_subnet,'') FROM wdtt_inbound WHERE id=1;" 2>/dev/null || true)"
+    if [[ -z "$vpn" ]]; then
+      vpn="$(sqlite3 "$db" "SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0) FROM wdtt_inbound WHERE id=1;" 2>/dev/null || true)"
+    fi
   elif command -v python3 >/dev/null; then
     row="$(python3 - "$db" <<'PY' 2>/dev/null || true
 import sqlite3, sys
@@ -502,11 +563,20 @@ PY
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
 try:
-    r = c.execute("SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0) FROM wdtt_inbound WHERE id=1").fetchone()
+    r = c.execute(
+        "SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0), COALESCE(csqtt_peer_port,0), COALESCE(raw_subnet,'') "
+        "FROM wdtt_inbound WHERE id=1"
+    ).fetchone()
 except Exception:
-    r = None
+    try:
+        r = c.execute("SELECT dtls_port, wg_port, COALESCE(raw_direct_port,0) FROM wdtt_inbound WHERE id=1").fetchone()
+    except Exception:
+        r = None
 if r:
-    print(f"{r[0]}|{r[1]}|{r[2]}")
+    if len(r) >= 5:
+        print(f"{r[0]}|{r[1]}|{r[2]}|{r[3]}|{r[4]}")
+    else:
+        print(f"{r[0]}|{r[1]}|{r[2]}")
 PY
     )"
   fi
@@ -516,14 +586,22 @@ PY
     [[ -n "$db_sub" && "$db_sub" -gt 0 ]] && SUB_PORT="$db_sub"
   fi
   if [[ -n "$vpn" ]]; then
-    IFS='|' read -r db_dtls db_wg db_raw <<< "$vpn"
+    IFS='|' read -r db_dtls db_wg db_raw db_csqtt db_subnet <<< "$vpn"
     [[ -n "$db_dtls" && "$db_dtls" -gt 0 ]] && DTLS_PORT="$db_dtls"
     [[ -n "$db_wg" && "$db_wg" -gt 0 ]] && WG_PORT="$db_wg"
     if [[ -n "$db_raw" && "$db_raw" -gt 0 ]]; then
       RAW_DIRECT_PORT="$db_raw"
     fi
+    if [[ -n "${db_csqtt:-}" && "$db_csqtt" -gt 0 ]]; then
+      CSQTT_PEER_PORT="$db_csqtt"
+    fi
+    if [[ -n "${db_subnet:-}" ]]; then
+      RAW_SUBNET="$db_subnet"
+    fi
   fi
   normalize_raw_direct_port
+  normalize_csqtt_peer_port
+  normalize_raw_subnet
 }
 
 setup_sysctl() {
@@ -551,37 +629,59 @@ install_mtu_rules_script() {
 
 apply_mtu_rules() {
   install_mtu_rules_script
+  normalize_raw_subnet
   if [[ -x /usr/local/bin/wdtt-mtu-rules.sh ]]; then
-    /usr/local/bin/wdtt-mtu-rules.sh up 2>/dev/null || true
-    info "MTU: MSS clamp + DF-clear для 10.66.66.0/24"
+    WDTT_RAW_NET="${RAW_SUBNET}" /usr/local/bin/wdtt-mtu-rules.sh up 2>/dev/null || true
+    info "MTU: MSS clamp + DF-clear для 10.66.66.0/24 и "
   fi
+}
+
+ensure_input_udp() {
+  local port="$1"
+  is_valid_udp_port "$port" || return 1
+  iptables -C INPUT -p udp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p udp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT
+}
+
+ensure_input_tcp() {
+  local port="$1"
+  is_valid_udp_port "$port" || return 1
+  iptables -C INPUT -p tcp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p tcp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT
+}
+
+ensure_input_tcp_iface() {
+  local iface="$1" port="$2"
+  is_valid_udp_port "$port" || return 1
+  [[ -n "$iface" ]] || return 1
+  iptables -C INPUT -i "$iface" -p tcp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -i "$iface" -p tcp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT
 }
 
 setup_firewall() {
   step "Настройка firewall и NAT..."
-  command -v iptables >/dev/null || { warn "iptables не найден — NAT вручную"; return; }
+  command -v iptables >/dev/null || { warn "iptables не найден — NAT вручную"; return 0; }
   read_panel_ports_from_db
   local wan; wan="$(detect_wan)"
-  [[ -n "$wan" ]] || { warn "WAN не определён"; return; }
+  [[ -n "$wan" ]] || { warn "WAN не определён"; return 0; }
   normalize_raw_direct_port
-  for rule in \
-    "INPUT -p udp --dport $DTLS_PORT" \
-    "INPUT -p udp --dport $WG_PORT" \
-    "INPUT -p udp --dport $RAW_DIRECT_PORT" \
-    "INPUT -p tcp --dport $SSH_PORT" \
-    "INPUT -p tcp --dport $PANEL_PORT" \
-    "INPUT -i $IFACE -p tcp --dport $PANEL_PORT" \
-    "INPUT -i $IFACE -p tcp --dport $SUB_PORT"; do
-    iptables -C $rule -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
-      iptables -I $rule -m comment --comment "$IPT_COMMENT" -j ACCEPT
-  done
+  normalize_csqtt_peer_port
+  normalize_raw_subnet
+  ensure_input_udp "$DTLS_PORT" || true
+  ensure_input_udp "$WG_PORT" || true
+  ensure_input_udp "$RAW_DIRECT_PORT" || true
+  ensure_input_udp "$CSQTT_PEER_PORT" || true
+  ensure_input_tcp "$SSH_PORT" || true
+  ensure_input_tcp "$PANEL_PORT" || true
+  ensure_input_tcp_iface "$IFACE" "$PANEL_PORT" || true
+  ensure_input_tcp_iface "$IFACE" "$SUB_PORT" || true
   iptables -C FORWARD -i "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
     iptables -I FORWARD -i "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT
   iptables -C FORWARD -o "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
     iptables -I FORWARD -o "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT
   iptables -t nat -C POSTROUTING -s 10.66.66.0/24 -o "$wan" -m comment --comment "$IPT_COMMENT" -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -s 10.66.66.0/24 -o "$wan" -m comment --comment "$IPT_COMMENT" -j MASQUERADE
-  info "NAT на $wan для 10.66.66.0/24"
+  info "NAT на $wan для 10.66.66.0/24 (RAW ${RAW_SUBNET} — WDTT_RAW_MANAGED при старте)"
   apply_mtu_rules
 }
 
@@ -660,11 +760,15 @@ readDeployEnvValue() {
 write_install_inbound_env() {
   mkdir -p "$CONFIG_DIR"
   normalize_raw_direct_port
+  normalize_csqtt_peer_port
+  normalize_raw_subnet
   cat > "${CONFIG_DIR}/install-inbound.env" <<EOF
-# Порты для seed panel.db (install.sh). Дальше — только через панель → Подключения.
+# Порты/подсеть для seed panel.db (install.sh). Дальше — только через панель → Подключения.
 DTLS_PORT=${DTLS_PORT}
 WG_PORT=${WG_PORT}
 RAW_DIRECT_PORT=${RAW_DIRECT_PORT}
+CSQTT_PEER_PORT=${CSQTT_PEER_PORT}
+RAW_SUBNET=${RAW_SUBNET}
 EOF
   chmod 644 "${CONFIG_DIR}/install-inbound.env"
 }
@@ -848,7 +952,7 @@ pick_release_version() {
   if [[ ${#tags[@]} -eq 0 ]]; then
     err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)${fetch_err:+ — ${fetch_err}}"
     echo -e "  ${dim}Частые причины: rate limit / 403, блокировка API с VPS.${plain}" >&2
-    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.4.79 wdtt update${plain}" >&2
+    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.4.84 wdtt update${plain}" >&2
     exit 1
   fi
 
@@ -1169,6 +1273,8 @@ PY
 install_wdtt_service() {
   local pass="$1"
   normalize_raw_direct_port
+  normalize_csqtt_peer_port
+  normalize_raw_subnet
   write_install_inbound_env
   local exec_args="-config-dir ${CONFIG_DIR}"
   if [[ "$WITH_PANEL" != "1" ]]; then
@@ -1176,7 +1282,7 @@ install_wdtt_service() {
   fi
   local ipt_pre
   ipt_pre=$(cat <<IPT
-ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; fi"
+ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${CSQTT_PEER_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${CSQTT_PEER_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; fi"
 IPT
 )
   cat > /etc/systemd/system/wdtt.service <<EOF
@@ -1310,9 +1416,13 @@ print_summary() {
   ui_success_box "Установка завершена успешно"
   echo ""
   normalize_raw_direct_port
+  normalize_csqtt_peer_port
+  normalize_raw_subnet
   ui_kv "DTLS порт" "${DTLS_PORT}/udp"
   ui_kv "WG порт" "${WG_PORT}/udp"
   ui_kv "RAW порт" "${RAW_DIRECT_PORT}/udp"
+  ui_kv "CSQTT порт" "${CSQTT_PEER_PORT}/udp"
+  ui_kv "RAW subnet" "${RAW_SUBNET}"
   ui_kv "VPN пароль" "${WDTT_PASSWORD}"
   if [[ "$WITH_PANEL" == "1" ]]; then
     echo ""
@@ -1400,6 +1510,9 @@ cmd_update() {
   build_wdtt "$SELECTED_TAG"
   disable_legacy_panel_service
 
+  # Update path must open CSQTT/RAW/DTLS/WG the same as fresh install (UFW/DROP hosts).
+  setup_firewall || warn "firewall update skipped"
+
   install_mtu_rules_script
   if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
     step "Обновление правил xray..."
@@ -1453,8 +1566,9 @@ kill_wdtt_processes() {
 
 remove_wdtt_network() {
   ip link del "$IFACE" 2>/dev/null || true
+  ip link del "$RAW_IFACE" 2>/dev/null || true
   if [[ -x /usr/local/bin/wdtt-mtu-rules.sh ]]; then
-    /usr/local/bin/wdtt-mtu-rules.sh down 2>/dev/null || true
+    WDTT_RAW_NET="${RAW_SUBNET:-10.70.0.0/16}" /usr/local/bin/wdtt-mtu-rules.sh down 2>/dev/null || true
   fi
   if [[ -x /usr/local/bin/wdtt-xray-rules.sh ]]; then
     /usr/local/bin/wdtt-xray-rules.sh down 2>/dev/null || true
@@ -1472,15 +1586,43 @@ remove_wdtt_binaries() {
     /usr/local/bin/wdtt-mtu-rules.sh
 }
 
+cleanup_firewall_comment_rules() {
+  local comment="$1"
+  local table="$2" chain="$3"
+  local rule
+  [[ -n "$comment" ]] || return 0
+  if [[ -n "$table" ]]; then
+    while IFS= read -r rule; do
+      [[ "$rule" == *"--comment ${comment}"* ]] || continue
+      read -r -a args <<<"$rule"
+      [[ "${args[0]:-}" == "-A" ]] || continue
+      args[0]="-D"
+      iptables -t "$table" "${args[@]}" 2>/dev/null || true
+    done < <(iptables -t "$table" -S "$chain" 2>/dev/null)
+  else
+    while IFS= read -r rule; do
+      [[ "$rule" == *"--comment ${comment}"* ]] || continue
+      read -r -a args <<<"$rule"
+      [[ "${args[0]:-}" == "-A" ]] || continue
+      args[0]="-D"
+      iptables "${args[@]}" 2>/dev/null || true
+    done < <(iptables -S "$chain" 2>/dev/null)
+  fi
+}
+
 cleanup_firewall_wdtt() {
   command -v iptables >/dev/null || return 0
   step "Удаление правил firewall и NAT..."
   read_panel_ports_from_db
   normalize_raw_direct_port
+  normalize_csqtt_peer_port
+  normalize_raw_subnet
   local wan port_specs=(
     "${DTLS_PORT}:udp"
     "${WG_PORT}:udp"
     "${RAW_DIRECT_PORT}:udp"
+    "${CSQTT_PEER_PORT}:udp"
+    "46000:udp"
     "${SSH_PORT}:tcp"
     "${PANEL_PORT}:tcp"
     "${SUB_PORT}:tcp"
@@ -1499,19 +1641,31 @@ cleanup_firewall_wdtt() {
     done
     iptables -D FORWARD -i "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -o "$IFACE" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -i "$RAW_IFACE" -m comment --comment "$RAW_IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -o "$RAW_IFACE" -m comment --comment "$RAW_IPT_COMMENT" -j ACCEPT 2>/dev/null || true
+    iptables -D INPUT -i "$RAW_IFACE" -m comment --comment "$RAW_IPT_COMMENT" -j ACCEPT 2>/dev/null || true
     if [[ -n "$wan" ]]; then
       iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o "$wan" -m comment --comment "$IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -s "${RAW_SUBNET}" -o "$wan" -m comment --comment "$RAW_IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -s 10.70.0.0/16 -o "$wan" -m comment --comment "$RAW_IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -s 10.70.66.0/24 -o "$wan" -m comment --comment "$RAW_IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
     fi
     for nat_iface in "$wan" $(ls /sys/class/net 2>/dev/null); do
       [[ -n "$nat_iface" ]] || continue
       iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o "$nat_iface" -m comment --comment "$IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -s "${RAW_SUBNET}" -o "$nat_iface" -m comment --comment "$RAW_IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -s 10.70.0.0/16 -o "$nat_iface" -m comment --comment "$RAW_IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -s 10.70.66.0/24 -o "$nat_iface" -m comment --comment "$RAW_IPT_COMMENT" -j MASQUERADE 2>/dev/null || true
     done
   done
+  cleanup_firewall_comment_rules "$RAW_IPT_COMMENT" "" "INPUT"
+  cleanup_firewall_comment_rules "$RAW_IPT_COMMENT" "" "FORWARD"
+  cleanup_firewall_comment_rules "$RAW_IPT_COMMENT" "nat" "POSTROUTING"
   if command -v nft >/dev/null; then
     nft delete table ip wdtt 2>/dev/null || true
     nft delete table inet wdtt 2>/dev/null || true
   fi
-  info "Правила iptables/nft с меткой ${IPT_COMMENT} сняты"
+  info "Правила iptables/nft с меткой ${IPT_COMMENT}/${RAW_IPT_COMMENT} сняты"
 }
 
 cmd_uninstall() {
@@ -1578,6 +1732,11 @@ cmd_status() {
   cmd_status_pretty
 }
 
+# Sourced by tests — expose helpers without running installer main.
+if [[ "${WDTT_INSTALL_LIBONLY:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 # ── parse args ──
 ORIG_ARGC=$#
 WITH_PANEL=""
@@ -1624,7 +1783,7 @@ WDTT Installer v${INSTALLER_VERSION}
 
 Опции:
   -p, --password PASS   Свой пароль VPN
-  --version TAG         Версия для обновления (v1.4.0)
+  --version TAG         Версия для обновления (v1.4.84)
   --no-menu             Без интерактивного меню
   --force               Переустановка
   menu | update | status | uninstall | purge
@@ -1632,7 +1791,7 @@ WDTT Installer v${INSTALLER_VERSION}
   uninstall  — сервисы и бинарники; /etc/wdtt сохраняется
   purge      — полное удаление: конфиги, NAT, firewall, логи
 
-Переменные: WDTT_GITHUB_USER, WDTT_VERSION, WDTT_RAW_PORT, WDTT_NO_MENU=1
+Переменные: WDTT_GITHUB_USER, WDTT_VERSION, WDTT_RAW_PORT, WDTT_CSQTT_PORT, WDTT_RAW_NET, WDTT_NO_MENU=1
 EOF
       exit 0
       ;;
