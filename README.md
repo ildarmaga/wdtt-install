@@ -18,7 +18,7 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.5.4** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
+В шапке установщика: **installer v1.5.5** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
 
 **Рекомендуется wdtt ≥ v1.5.0** (CSQTT Простая/Средняя, Xray redirect для `wdtt-raw`+`wdtt0`, CSQTT peer UDP 46000, shared RAW subnet). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
 
