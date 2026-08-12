@@ -1,11 +1,14 @@
 #!/bin/bash
-# Заворот трафика wdtt0 -> xray (REDIRECT режим, по рецепту issue #146)
+# Заворот VPN-трафика в Xray (REDIRECT): wdtt0 (WG) + wdtt-raw (RAW/CSQTT).
 # MTU (MSS + DF-clear): /usr/local/bin/wdtt-mtu-rules.sh — не дублировать здесь.
 set +e
-IFACE="wdtt0"
-XPORT="12345"
-DNS_IP="10.66.66.1"
-TUN_NET="10.66.66.0/24"
+
+WG_IFACE="${WDTT_IFACE:-wdtt0}"
+RAW_IFACE="${WDTT_RAW_IFACE:-wdtt-raw}"
+XPORT="${WDTT_XRAY_PORT:-12345}"
+DNS_IP="${WDTT_DNS_IP:-10.66.66.1}"
+WG_NET="${WDTT_TUN_NET:-10.66.66.0/24}"
+RAW_NET="${WDTT_RAW_NET:-10.70.0.0/16}"
 
 load_panel_ports() {
     local db="/etc/wdtt/panel.db"
@@ -37,14 +40,20 @@ PY
 
 load_panel_ports
 
+cleanup_iface() {
+    local iface="$1"
+    iptables -t nat -D PREROUTING -i "$iface" -j XRAY_REDIRECT 2>/dev/null
+    iptables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -j DNAT --to-destination "${DNS_IP}:53" 2>/dev/null
+    while iptables -C INPUT -i "$iface" -m comment --comment WDTT_XRAY -j ACCEPT 2>/dev/null; do
+        iptables -D INPUT -i "$iface" -m comment --comment WDTT_XRAY -j ACCEPT 2>/dev/null
+    done
+}
+
 cleanup() {
-    iptables -t nat -D PREROUTING -i "$IFACE" -j XRAY_REDIRECT 2>/dev/null
+    cleanup_iface "$WG_IFACE"
+    cleanup_iface "$RAW_IFACE"
     iptables -t nat -F XRAY_REDIRECT 2>/dev/null
     iptables -t nat -X XRAY_REDIRECT 2>/dev/null
-    iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 53 -j DNAT --to-destination "${DNS_IP}:53" 2>/dev/null
-    while iptables -C INPUT -i "$IFACE" -m comment --comment WDTT_XRAY -j ACCEPT 2>/dev/null; do
-        iptables -D INPUT -i "$IFACE" -m comment --comment WDTT_XRAY -j ACCEPT 2>/dev/null
-    done
 }
 
 if [ "${1:-}" = "down" ]; then
@@ -55,15 +64,10 @@ fi
 
 cleanup
 
-# INPUT: разрешаем трафик с туннеля к локальному xray (REDIRECT отдаёт на 10.66.66.1:12345 -> INPUT)
-iptables -I INPUT 1 -i "$IFACE" -m comment --comment WDTT_XRAY -j ACCEPT
-
-# DNS -> локальный xray dns-in
-iptables -t nat -I PREROUTING 1 -i "$IFACE" -p udp --dport 53 -j DNAT --to-destination "${DNS_IP}:53"
-
-# Цепочка REDIRECT
+# Цепочка REDIRECT (общая для обоих TUN)
 iptables -t nat -N XRAY_REDIRECT
-iptables -t nat -A XRAY_REDIRECT -d 10.66.66.0/24 -j RETURN
+iptables -t nat -A XRAY_REDIRECT -d "$WG_NET" -j RETURN
+iptables -t nat -A XRAY_REDIRECT -d "$RAW_NET" -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 127.0.0.0/8 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d 255.255.255.255/32 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$PANEL_PORT" -j RETURN
@@ -71,10 +75,35 @@ iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$SUB_PORT" -j RETURN
 iptables -t nat -A XRAY_REDIRECT -m addrtype --dst-type LOCAL -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p udp --dport 53 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p tcp -j REDIRECT --to-ports "$XPORT"
-iptables -t nat -A PREROUTING -i "$IFACE" -j XRAY_REDIRECT
+
+APPLIED=""
+apply_iface() {
+    local iface="$1"
+    if ! ip link show "$iface" >/dev/null 2>&1; then
+        return 1
+    fi
+    # INPUT: REDIRECT отдаёт на gateway:12345 → нужен ACCEPT с туннеля
+    iptables -I INPUT 1 -i "$iface" -m comment --comment WDTT_XRAY -j ACCEPT
+    # DNS → локальный xray dns-in (10.66.66.1:53)
+    iptables -t nat -I PREROUTING 1 -i "$iface" -p udp --dport 53 -j DNAT --to-destination "${DNS_IP}:53"
+    iptables -t nat -A PREROUTING -i "$iface" -j XRAY_REDIRECT
+    if [[ -n "$APPLIED" ]]; then
+        APPLIED="${APPLIED}+${iface}"
+    else
+        APPLIED="$iface"
+    fi
+    return 0
+}
+
+apply_iface "$WG_IFACE" || true
+apply_iface "$RAW_IFACE" || true
 
 if [[ -x /usr/local/bin/wdtt-mtu-rules.sh ]]; then
     /usr/local/bin/wdtt-mtu-rules.sh up
 fi
 
-echo "wdtt-xray rules applied (panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, DNS -> $DNS_IP:53)"
+if [[ -z "$APPLIED" ]]; then
+    echo "wdtt-xray rules: no VPN ifaces up yet (wait for wdtt0/wdtt-raw)"
+    exit 0
+fi
+echo "wdtt-xray rules applied (ifaces:${APPLIED} panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, DNS -> $DNS_IP:53)"

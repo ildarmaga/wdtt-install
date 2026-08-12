@@ -34,9 +34,9 @@ assert_file "$MTU"
 assert_file "$README"
 
 # Version / docs aligned to public WDTT line
-assert_grep 'INSTALLER_VERSION="1\.4\.84"' "$INSTALL" "INSTALLER_VERSION=1.4.84"
-assert_grep 'installer v1\.4\.84' "$README" "README installer version"
-assert_grep '≥ v1\.4\.84' "$README" "README recommends ≥ v1.4.84"
+assert_grep 'INSTALLER_VERSION="1\.5\.0"' "$INSTALL" "INSTALLER_VERSION=1.5.0"
+assert_grep 'installer v1\.5\.0' "$README" "README installer version"
+assert_grep '≥ v1\.5\.0' "$README" "README recommends ≥ v1.5.0"
 
 # Release asset contract unchanged
 assert_grep 'wdtt-linux-\$\{ARCH\}' "$INSTALL" "asset name wdtt-linux-\${ARCH}"

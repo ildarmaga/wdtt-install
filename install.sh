@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.4.86"
+INSTALLER_VERSION="1.5.0"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -285,7 +285,7 @@ ui_show_help() {
   ui_kv "CLI" "wdtt restart | stop | start | uninstall | purge"
   echo ""
   ui_kv "Опции" "--password, --direct, --no-panel"
-  ui_kv "Версия" "install update --version v1.4.84"
+  ui_kv "Версия" "install update --version v1.5.0"
   ui_kv "Авто" "install --no-menu"
   echo ""
   ui_press_enter
@@ -953,7 +953,7 @@ pick_release_version() {
   if [[ ${#tags[@]} -eq 0 ]]; then
     err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)${fetch_err:+ — ${fetch_err}}"
     echo -e "  ${dim}Частые причины: rate limit / 403, блокировка API с VPS.${plain}" >&2
-    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.4.84 wdtt update${plain}" >&2
+    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.5.0 wdtt update${plain}" >&2
     exit 1
   fi
 
@@ -1784,7 +1784,7 @@ WDTT Installer v${INSTALLER_VERSION}
 
 Опции:
   -p, --password PASS   Свой пароль VPN
-  --version TAG         Версия для обновления (v1.4.84)
+  --version TAG         Версия для обновления (v1.5.0)
   --no-menu             Без интерактивного меню
   --force               Переустановка
   menu | update | status | uninstall | purge

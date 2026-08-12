@@ -18,16 +18,16 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.4.84** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
+В шапке установщика: **installer v1.5.0** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
 
-**Рекомендуется wdtt ≥ v1.4.84** (CSQTT peer UDP 46000, shared RAW subnet, RAW UDP порт в панели; unified server+panel ≥ v1.4.49). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
+**Рекомендуется wdtt ≥ v1.5.0** (CSQTT Простая/Средняя, Xray redirect для `wdtt-raw`+`wdtt0`, CSQTT peer UDP 46000, shared RAW subnet). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (в `panel.db`, не в systemd);
 - **xray** и **веб-панель** устанавливаются сами;
 - если WDTT уже установлен — запускается **обновление** с выбором версии из GitHub Releases.
 
-Если `wdtt update` пишет «не удалось получить список версий» — обычно rate limit / 403 GitHub API с VPS. Обход: `export GITHUB_TOKEN=...` или `WDTT_VERSION=v1.4.84 wdtt update`.
+Если `wdtt update` пишет «не удалось получить список версий» — обычно rate limit / 403 GitHub API с VPS. Обход: `export GITHUB_TOKEN=...` или `WDTT_VERSION=v1.5.0 wdtt update`.
 
 Свой пароль (опционально):
 
@@ -68,7 +68,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ildarmaga/wdtt-install/main/
 install               установка (или обновление, если уже есть WDTT)
 update                обновление с выбором версии
 -p, --password PASS   свой пароль VPN (иначе генерируется)
---version TAG         версия для обновления (v1.4.84)
+--version TAG         версия для обновления (v1.5.0)
 --xray                маршрутизация через xray (по умолчанию)
 --direct              без xray, прямой NAT
 --panel               веб-панель (по умолчанию)
