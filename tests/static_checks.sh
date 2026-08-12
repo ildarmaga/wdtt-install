@@ -34,8 +34,8 @@ assert_file "$MTU"
 assert_file "$README"
 
 # Version / docs aligned to public WDTT line
-assert_grep 'INSTALLER_VERSION="1\.5\.3"' "$INSTALL" "INSTALLER_VERSION=1.5.3"
-assert_grep 'installer v1\.5\.3' "$README" "README installer version"
+assert_grep 'INSTALLER_VERSION="1\.5\.4"' "$INSTALL" "INSTALLER_VERSION=1.5.4"
+assert_grep 'installer v1\.5\.4' "$README" "README installer version"
 assert_grep '≥ v1\.5\.0' "$README" "README recommends ≥ v1.5.0"
 assert_grep 'normalize_release_tag' "$INSTALL" "tag normalization for GitHub releases"
 assert_grep 'WDTT_VERSION.*normalize_release_tag|normalize_release_tag "\$WDTT_VERSION"' "$INSTALL" "WDTT_VERSION bypass before tag list"
