@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.5.0"
+INSTALLER_VERSION="1.5.1"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -934,6 +934,24 @@ filter_release_tags_since_db() {
   ((${#out[@]} > 0)) && printf '%s\n' "${out[@]}"
 }
 
+# GitHub Releases используют теги v1.5.0 — без v API отдаёт 404.
+normalize_release_tag() {
+  local t="${1#v}"
+  t="${t%%/*}"
+  t="$(echo "$t" | tr -d '[:space:]')"
+  [[ -n "$t" ]] && echo "v${t}" || echo ""
+}
+
+# Починка panel.db после апгрейда со старых схем (issue #36).
+repair_panel_db_schema() {
+  local db="${CONFIG_DIR}/panel.db"
+  [[ -f "$db" ]] || return 0
+  command -v sqlite3 >/dev/null || return 0
+  sqlite3 "$db" "ALTER TABLE wdtt_inbound ADD COLUMN raw_subnet TEXT NOT NULL DEFAULT '10.70.0.0/16';" 2>/dev/null || true
+  sqlite3 "$db" "ALTER TABLE wdtt_inbound ADD COLUMN csqtt_enable INTEGER NOT NULL DEFAULT 1;" 2>/dev/null || true
+  sqlite3 "$db" "ALTER TABLE wdtt_inbound ADD COLUMN csqtt_peer_port INTEGER NOT NULL DEFAULT 46000;" 2>/dev/null || true
+}
+
 pick_release_version() {
   local -a tags=()
   local tag current i choice mark label
@@ -950,27 +968,22 @@ pick_release_version() {
   if ((${#tags[@]} > 0)); then
     mapfile -t tags < <(filter_release_tags_since_db "${tags[@]}")
   fi
-  if [[ ${#tags[@]} -eq 0 ]]; then
-    err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)${fetch_err:+ — ${fetch_err}}"
-    echo -e "  ${dim}Частые причины: rate limit / 403, блокировка API с VPS.${plain}" >&2
-    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v1.5.0 wdtt update${plain}" >&2
-    exit 1
-  fi
-
-  current="$(get_installed_version)"
 
   if [[ -n "${WDTT_VERSION:-}" ]]; then
-    for tag in "${tags[@]}"; do
-      if [[ "$tag" == "${WDTT_VERSION}" || "$tag" == "v${WDTT_VERSION}" ]]; then
-        SELECTED_TAG="$tag"
-        info "Версия из WDTT_VERSION: ${SELECTED_TAG}"
-        return 0
-      fi
-    done
-    SELECTED_TAG="${WDTT_VERSION}"
+    SELECTED_TAG="$(normalize_release_tag "$WDTT_VERSION")"
+    [[ -n "$SELECTED_TAG" ]] || { err "Некорректная версия: ${WDTT_VERSION}"; return 1; }
     info "Версия из WDTT_VERSION: ${SELECTED_TAG}"
     return 0
   fi
+
+  if [[ ${#tags[@]} -eq 0 ]]; then
+    err "Не удалось получить список версий с GitHub (${GITHUB_USER}/wdtt)${fetch_err:+ — ${fetch_err}}"
+    echo -e "  ${dim}Частые причины: rate limit / 403, блокировка API с VPS.${plain}" >&2
+    echo -e "  ${dim}Обход: export GITHUB_TOKEN=... или WDTT_VERSION=v${INSTALLER_VERSION} wdtt update${plain}" >&2
+    return 1
+  fi
+
+  current="$(get_installed_version)"
 
   if ! ui_attach_tty 2>/dev/null && [[ ! -t 0 ]]; then
     SELECTED_TAG="${tags[0]}"
@@ -1041,7 +1054,7 @@ pick_release_version() {
         _pick_draw_versions
         ;;
       enter)
-        if (( pick < 0 )); then echo -e "  ${dim}Отменено.${plain}"; exit 0; fi
+        if (( pick < 0 )); then echo -e "  ${dim}Отменено.${plain}"; return 1; fi
         SELECTED_TAG="${tags[$pick]}"
         info "Выбрано: ${SELECTED_TAG}"
         sleep 0.3
@@ -1049,11 +1062,11 @@ pick_release_version() {
         ;;
       q|Q|й|Й|esc)
         echo -e "  ${dim}Отменено.${plain}"
-        exit 0
+        return 1
         ;;
       0)
         echo -e "  ${dim}Отменено.${plain}"
-        exit 0
+        return 1
         ;;
       [1-9])
         if (( nav >= 1 && nav <= ${#tags[@]} )); then
@@ -1167,8 +1180,26 @@ run_interactive_menu() {
 
 download_release_binary() {
   local repo="$1" name="$2" dest="$3" tag="${4:-latest}"
-  local api json url asset
+  local api json url asset direct ver_tag
   asset="${name}-${ARCH}"
+  if [[ "$tag" != "latest" ]]; then
+    tag="$(normalize_release_tag "$tag")"
+    [[ -n "$tag" ]] || return 1
+    ver_tag="$tag"
+    direct="https://github.com/${repo}/releases/download/${ver_tag}/${asset}"
+    if github_curl "$direct" -o "$dest" 2>/dev/null && [[ -s "$dest" ]]; then
+      chmod +x "$dest"
+      WDTT_RELEASE_TAG="$ver_tag"
+      return 0
+    fi
+  else
+    direct="https://github.com/${repo}/releases/latest/download/${asset}"
+    if github_curl "$direct" -o "$dest" 2>/dev/null && [[ -s "$dest" ]]; then
+      chmod +x "$dest"
+      WDTT_RELEASE_TAG="latest"
+      return 0
+    fi
+  fi
   if [[ "$tag" == "latest" ]]; then
     api="https://api.github.com/repos/${repo}/releases/latest"
   else
@@ -1176,7 +1207,6 @@ download_release_binary() {
   fi
   json="$(github_curl "$api" 2>/dev/null)" || return 1
   tag="$(printf '%s\n' "$json" | json_string_field tag_name | head -1 || true)"
-  # browser_download_url …/wdtt-linux-amd64
   url="$(printf '%s\n' "$json" | grep -oE "https://[^\"]+/${asset}(\?[^\"]*)?" | head -1 || true)"
   [[ -n "$url" ]] || return 1
   github_curl "$url" -o "$dest" || return 1
@@ -1224,8 +1254,10 @@ build_wdtt() {
   local src="${BUILD_DIR}/wdtt"
   clone_or_update "$REPO_WDTT" "$src" "/root/wdtt"
   if [[ "$tag" != "latest" && -d "$src/.git" ]]; then
-    git -C "$src" fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}" 2>>"$LOG_FILE" || true
-    git -C "$src" checkout -f "$tag" 2>>"$LOG_FILE" || git -C "$src" checkout -f "$BRANCH" 2>>"$LOG_FILE" || true
+    local gtag
+    gtag="$(normalize_release_tag "$tag")"
+    git -C "$src" fetch --depth 1 origin "refs/tags/${gtag}:refs/tags/${gtag}" 2>>"$LOG_FILE" || true
+    git -C "$src" checkout -f "$gtag" 2>>"$LOG_FILE" || git -C "$src" checkout -f "$BRANCH" 2>>"$LOG_FILE" || true
   fi
   local version="${tag#v}"
   [[ -z "$version" || "$version" == "latest" ]] && version="${INSTALLER_VERSION}"
@@ -1499,7 +1531,7 @@ cmd_update() {
   WDTT_PASSWORD="$(read_existing_password)"
   [[ -n "$WDTT_PASSWORD" ]] || WDTT_PASSWORD="$(gen_password)"
 
-  pick_release_version
+  pick_release_version || return 0
 
   ui_clear
   ui_banner
@@ -1537,6 +1569,8 @@ cmd_update() {
   install_wdtt_service "$WDTT_PASSWORD"
   ensure_install_tree
   install_wdtt_cmd
+
+  repair_panel_db_schema
 
   step "Перезапуск сервисов..."
   start_services
@@ -1896,6 +1930,8 @@ fi
 ensure_install_tree
 chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/templates/wdtt.sh" 2>/dev/null || true
 install -m 0755 "$INSTALL_DIR/templates/wdtt.sh" /usr/local/bin/wdtt
+
+repair_panel_db_schema
 
 step "Запуск сервисов..."
 start_services
