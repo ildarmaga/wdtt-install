@@ -29,8 +29,11 @@ assert_not_grep() {
   fi
 }
 
+XRAY="${ROOT}/templates/wdtt-xray-rules.sh"
+
 assert_file "$INSTALL"
 assert_file "$MTU"
+assert_file "$XRAY"
 assert_file "$README"
 
 # Version / docs aligned to public WDTT line
@@ -69,6 +72,43 @@ assert_grep 'RAW_SUBNET=\$\{RAW_SUBNET\}' "$INSTALL" "seed writes RAW_SUBNET"
 assert_grep 'remove_all_managed_mss_iptables' "$MTU" "mtu template cleans all managed MSS"
 assert_grep 'WDTT_RAW_NET:-10\.70\.0\.0/16' "$MTU" "mtu default RAW /16"
 assert_grep 'is_private_ipv4_cidr|private IPv4|10\.70\.0\.0/16' "$MTU" "mtu validates or defaults RAW_NET"
+
+# Issue #40: Xray REDIRECT for wdtt0 + wdtt-raw (name-scoped, even if TUN is down)
+assert_grep 'RAW_IFACE="\$\{WDTT_RAW_IFACE:-wdtt-raw\}"' "$XRAY" "xray-rules RAW iface wdtt-raw"
+assert_grep 'WG_IFACE="\$\{WDTT_IFACE:-wdtt0\}"' "$XRAY" "xray-rules WG iface wdtt0"
+assert_grep 'apply_iface "\$WG_IFACE"' "$XRAY" "xray-rules apply wdtt0"
+assert_grep 'apply_iface "\$RAW_IFACE"' "$XRAY" "xray-rules apply wdtt-raw"
+assert_grep '-p tcp -j REDIRECT --to-ports' "$XRAY" "TCP-only REDIRECT to xray"
+assert_grep '-p udp --dport 53' "$XRAY" "DNS DNAT udp/53"
+assert_grep 'SELECT raw_subnet FROM wdtt_inbound' "$XRAY" "load custom raw_subnet from panel.db"
+assert_grep 'valid_raw_net' "$XRAY" "raw_subnet validator"
+assert_grep 'is_valid_raw_subnet' "$XRAY" "raw-specific validator in helper"
+assert_grep 'is_valid_raw_subnet' "$INSTALL" "raw-specific validator in installer"
+assert_grep '10#\$prefix >= 16 && 10#\$prefix <= 29' "$XRAY" "valid_raw_net prefix /16-/29"
+assert_grep '10#\$prefix >= 16 && 10#\$prefix <= 29' "$INSTALL" "installer raw subnet /16-/29"
+assert_grep '10#\$prefix >= 8 && 10#\$prefix <= 32' "$INSTALL" "general private CIDR stays /8-/32"
+assert_not_grep '/tmp/wdtt-xray-rules.lock' "$XRAY" "no /tmp flock fallback (symlink)"
+assert_grep '/run/wdtt-xray-rules.lock' "$XRAY" "flock uses /run lock"
+assert_grep 'load_raw_net' "$XRAY" "load_raw_net helper"
+assert_grep 'export WDTT_RAW_NET=' "$XRAY" "export WDTT_RAW_NET for mtu"
+assert_grep 'WDTT_RAW_NET="\$RAW_NET" /usr/local/bin/wdtt-mtu-rules.sh up' "$XRAY" "pass custom RAW_NET into mtu up"
+assert_grep 'while iptables -t nat -C PREROUTING -i "\$iface" -j XRAY_REDIRECT' "$XRAY" "idempotent loop-delete PREROUTING jump"
+assert_grep 'iptables -t nat -C PREROUTING -i "\$iface" -j XRAY_REDIRECT 2>/dev/null \|\|' "$XRAY" "idempotent add PREROUTING jump"
+assert_grep 'iptables -C INPUT -i "\$iface" -m comment --comment WDTT_XRAY' "$XRAY" "idempotent INPUT ACCEPT"
+assert_not_grep 'ip link show' "$XRAY" "must not gate REDIRECT on ip link show (wdtt-raw race)"
+assert_not_grep '-p udp -j DROP' "$XRAY" "no broad UDP DROP"
+assert_not_grep '-p udp -j REJECT' "$XRAY" "no broad UDP REJECT"
+
+# Issue #40: wdtt.service up/down applies both xray + MTU; xray unit has no sleep-1 race
+assert_grep 'install_wdtt_service' "$INSTALL" "install_wdtt_service present"
+assert_grep 'wdtt-xray-rules.sh up' "$INSTALL" "installer applies xray-rules up"
+assert_grep 'wdtt-xray-rules.sh down' "$INSTALL" "installer applies xray-rules down"
+assert_not_grep 'sleep 1; /usr/local/bin/wdtt-xray-rules.sh up' "$INSTALL" "no fixed 1s sleep before xray-rules (wdtt-raw race)"
+assert_not_grep 'seq 1 40' "$INSTALL" "no leftover wdtt-raw wait loop"
+assert_grep 'install -m 0755 "\$\{TEMPLATES_DIR\}/wdtt-xray-rules.sh"' "$INSTALL" "upgrade installs refreshed helper"
+assert_grep 'wdtt_service_routing_posts' "$INSTALL" "routing posts helper for --direct vs xray"
+assert_grep 'teardown_xray_routing_leftovers' "$INSTALL" "xray leftover teardown helper"
+assert_grep 'disable --now wdtt-xray.service' "$INSTALL" "direct mode disable --now leftover xray unit"
 
 # No real tokens / secrets embedded
 assert_not_grep 'ghp_[A-Za-z0-9]{20,}' "$INSTALL" "no GitHub PAT in install.sh"

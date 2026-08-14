@@ -531,8 +531,32 @@ is_private_ipv4_cidr() {
   return 1
 }
 
+# RAW/CSQTT subnet: RFC1918, prefix /16-/29 (panel Go policy), no leading-zero octets.
+is_valid_raw_subnet() {
+  local cidr="${1:-}"
+  local o1 o2 o3 o4 prefix oct
+  [[ "$cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  o1="${BASH_REMATCH[1]}"; o2="${BASH_REMATCH[2]}"; o3="${BASH_REMATCH[3]}"; o4="${BASH_REMATCH[4]}"
+  prefix="${BASH_REMATCH[5]}"
+  for oct in "$o1" "$o2" "$o3" "$o4" "$prefix"; do
+    [[ "$oct" =~ ^0[0-9] ]] && return 1
+  done
+  ((10#$o1 <= 255 && 10#$o2 <= 255 && 10#$o3 <= 255 && 10#$o4 <= 255)) || return 1
+  ((10#$prefix >= 16 && 10#$prefix <= 29)) || return 1
+  if ((10#$o1 == 10)); then
+    return 0
+  fi
+  if ((10#$o1 == 172 && 10#$o2 >= 16 && 10#$o2 <= 31)); then
+    return 0
+  fi
+  if ((10#$o1 == 192 && 10#$o2 == 168)); then
+    return 0
+  fi
+  return 1
+}
+
 normalize_raw_subnet() {
-  if ! is_private_ipv4_cidr "${RAW_SUBNET:-}"; then
+  if ! is_valid_raw_subnet "${RAW_SUBNET:-}"; then
     if [[ -n "${RAW_SUBNET:-}" ]]; then
       warn "Некорректный RAW_SUBNET=${RAW_SUBNET} — использую 10.70.0.0/16"
     fi
@@ -625,6 +649,24 @@ EOF
 install_mtu_rules_script() {
   [[ -f "${TEMPLATES_DIR}/wdtt-mtu-rules.sh" ]] || return 0
   install -m 0755 "${TEMPLATES_DIR}/wdtt-mtu-rules.sh" /usr/local/bin/wdtt-mtu-rules.sh
+}
+
+install_xray_rules_script() {
+  [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]] || return 0
+  install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
+}
+
+# xray→--direct: flush REDIRECT, stop leftover unit, remove helper so startRawTUN cannot re-apply.
+teardown_xray_routing_leftovers() {
+  local helper="${WDTT_XRAY_RULES_BIN:-/usr/local/bin/wdtt-xray-rules.sh}"
+  local systemd_dir="${WDTT_SYSTEMD_DIR:-/etc/systemd/system}"
+  if [[ -x "$helper" ]]; then
+    "$helper" down 2>/dev/null || true
+  fi
+  systemctl disable --now wdtt-xray.service 2>/dev/null || true
+  rm -f "${systemd_dir}/wdtt-xray.service"
+  systemctl daemon-reload 2>/dev/null || true
+  rm -f "$helper" /usr/local/bin/wdtt-xray-rules.sh
 }
 
 apply_mtu_rules() {
@@ -1303,6 +1345,19 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
+# ExecStartPost/StopPost for wdtt.service. --direct omits xray-rules even if leftover helper exists.
+wdtt_service_routing_posts() {
+  local wait_loop
+  wait_loop="for i in \$(seq 1 60); do ip addr show ${IFACE} 2>/dev/null | grep -q \"10.66.66.1\" && break; sleep 0.5; done"
+  if [[ "${WITH_XRAY}" == "1" ]]; then
+    WDTT_EXEC_START_POST="/usr/bin/env \"WDTT_RAW_NET=${RAW_SUBNET}\" bash -c '${wait_loop}; if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then /usr/local/bin/wdtt-xray-rules.sh up; fi; /usr/local/bin/wdtt-mtu-rules.sh up'"
+    WDTT_EXEC_STOP_POST="-/usr/bin/env \"WDTT_RAW_NET=${RAW_SUBNET}\" bash -c 'if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then /usr/local/bin/wdtt-xray-rules.sh down; fi; /usr/local/bin/wdtt-mtu-rules.sh down'"
+  else
+    WDTT_EXEC_START_POST="/usr/bin/env \"WDTT_RAW_NET=${RAW_SUBNET}\" bash -c '${wait_loop}; /usr/local/bin/wdtt-mtu-rules.sh up'"
+    WDTT_EXEC_STOP_POST="-/usr/local/bin/wdtt-mtu-rules.sh down"
+  fi
+}
+
 install_wdtt_service() {
   local pass="$1"
   normalize_raw_direct_port
@@ -1318,7 +1373,9 @@ install_wdtt_service() {
 ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${DTLS_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${WG_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${RAW_DIRECT_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p udp --dport ${CSQTT_PEER_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${CSQTT_PEER_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; iptables -C INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${SSH_PORT} -m comment --comment ${IPT_COMMENT} -j ACCEPT; fi"
 IPT
 )
-  cat > /etc/systemd/system/wdtt.service <<EOF
+  wdtt_service_routing_posts
+  mkdir -p "${WDTT_SYSTEMD_DIR:-/etc/systemd/system}"
+  cat > "${WDTT_SYSTEMD_DIR:-/etc/systemd/system}/wdtt.service" <<EOF
 [Unit]
 Description=WDTT (panel + VPN server)
 After=network-online.target
@@ -1330,8 +1387,8 @@ SyslogIdentifier=wdtt
 ExecStartPre=-/usr/bin/env bash -c "ip link show ${IFACE} >/dev/null 2>&1 && ip link del ${IFACE} 2>/dev/null || true"
 ${ipt_pre}
 ExecStart=${WDTT_BIN} ${exec_args}
-ExecStartPost=/usr/bin/env bash -c 'for i in \$(seq 1 60); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && /usr/local/bin/wdtt-mtu-rules.sh up && exit 0; sleep 0.5; done; /usr/local/bin/wdtt-mtu-rules.sh up'
-ExecStopPost=-/usr/local/bin/wdtt-mtu-rules.sh down
+ExecStartPost=${WDTT_EXEC_START_POST}
+ExecStopPost=${WDTT_EXEC_STOP_POST}
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
@@ -1340,6 +1397,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
   install_mtu_rules_script
+  if [[ "${WITH_XRAY}" == "1" ]]; then
+    install_xray_rules_script
+  fi
   disable_legacy_panel_service
   systemctl daemon-reload
   systemctl enable wdtt.service
@@ -1389,7 +1449,7 @@ install_xray_config() {
 
 install_xray_rules() {
   install_mtu_rules_script
-  install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
+  install_xray_rules_script
   cat > /etc/systemd/system/wdtt-xray.service <<EOF
 [Unit]
 Description=WDTT Xray routing (wdtt0 -> xray)
@@ -1402,7 +1462,7 @@ Type=simple
 Environment=XRAY_LOCATION_ASSET=${XRAY_BIN_DIR}
 ExecStartPre=/usr/bin/env bash -c 'for i in \$(seq 1 30); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && exit 0; sleep 0.5; done; exit 1'
 ExecStart=${XRAY_BIN_DIR}/$(xray_bin_filename) run -c ${XRAY_CONFIG_DIR}/config.json
-ExecStartPost=/usr/bin/env bash -c 'sleep 1; /usr/local/bin/wdtt-xray-rules.sh up'
+ExecStartPost=/usr/local/bin/wdtt-xray-rules.sh up
 ExecStopPost=-/usr/local/bin/wdtt-xray-rules.sh down
 Restart=always
 RestartSec=5
@@ -1547,16 +1607,16 @@ cmd_update() {
   setup_firewall || warn "firewall update skipped"
 
   install_mtu_rules_script
-  if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
-    step "Обновление правил xray..."
-    install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
-    /usr/local/bin/wdtt-xray-rules.sh up 2>/dev/null || true
-    info "Правила xray обновлены"
-  else
-    apply_mtu_rules
-  fi
-
   if [[ "$WITH_XRAY" == "1" ]]; then
+    if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
+      step "Обновление правил xray..."
+      install_xray_rules_script
+      normalize_raw_subnet
+      WDTT_RAW_NET="${RAW_SUBNET}" /usr/local/bin/wdtt-xray-rules.sh up 2>/dev/null || true
+      info "Правила xray обновлены"
+    else
+      apply_mtu_rules
+    fi
     if [[ ! -x "${XRAY_BIN_DIR}/$(xray_bin_filename)" ]]; then
       install_xray_binary
       install_xray_config
@@ -1564,6 +1624,9 @@ cmd_update() {
       fix_xray_dns_if_needed
     fi
     install_xray_rules
+  else
+    teardown_xray_routing_leftovers
+    apply_mtu_rules
   fi
 
   install_wdtt_service "$WDTT_PASSWORD"
@@ -1921,6 +1984,8 @@ if [[ "$WITH_XRAY" == "1" ]]; then
   install_xray_binary
   install_xray_config
   install_xray_rules
+else
+  teardown_xray_routing_leftovers
 fi
 
 if [[ "$WITH_PANEL" != "1" ]]; then
