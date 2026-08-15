@@ -18,9 +18,11 @@ wdtt menu
 
 `wdtt menu` / `wdtt update` всегда подтягивают **свежий** install.sh с GitHub (git clone), не локальную копию `/usr/local/wdtt/install.sh`.
 
-В шапке установщика: **installer v1.5.35** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
+В шапке установщика: **installer v1.5.39** (линейка релизов [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt)).
 
 **Рекомендуется wdtt ≥ v1.5.0** (CSQTT Простая/Средняя, Xray redirect для `wdtt-raw`+`wdtt0`, CSQTT peer UDP 46000, shared RAW subnet). Свежая установка ставит **latest** с GitHub Releases (не пин версии installer).
+
+При установке с Xray внутренний UDP клиентов с `wdtt0`/`wdtt-raw` (WebRTC, игры) направляется через `XRAY_TPROXY` на защищённый `tproxy-in :12346`; DNS UDP/53 остаётся отдельным DNAT. Режим `--direct` эти правила не устанавливает.
 
 **По умолчанию:**
 - пароль VPN **генерируется автоматически** (в `panel.db`, не в systemd);

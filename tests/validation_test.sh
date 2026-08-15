@@ -125,13 +125,15 @@ if awk '
   /^cmd_update\(\)/ {inside=1}
   inside && /^}/ {exit}
   inside && /install_xray_rules_script|install -m 0755 .*wdtt-xray-rules\.sh/ {helper=1}
+  inside && /install_xray_config/ {config=1}
   inside && /install_xray_rules$/ {xray=1}
   inside && /install_wdtt_service/ {unit=1}
-  END {exit (helper && xray && unit)?0:1}
+  inside && /WDTT_RAW_NET=.*wdtt-xray-rules\.sh up/ {early_up=1}
+  END {exit (helper && config && xray && unit && !early_up)?0:1}
 ' "$INSTALL"; then
-  pass "cmd_update refreshes xray helper + xray unit + wdtt unit"
+  pass "cmd_update patches config before service-managed rules and refreshes both units"
 else
-  fail_msg "cmd_update must reinstall wdtt-xray-rules.sh and rewrite wdtt/xray units"
+  fail_msg "cmd_update must patch config, refresh helper/units, and avoid applying TPROXY before config"
 fi
 
 echo "== contract: cmd_update xray helper only when WITH_XRAY=1 =="
@@ -220,6 +222,50 @@ if ! source "$INSTALL"; then
   exit 1
 fi
 pass "sourced lib-only"
+
+echo "== ensure_xray_tproxy_in =="
+tproxy_dir="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-tproxy-config.XXXXXX")"
+XRAY_CONFIG_DIR="$tproxy_dir"
+cat > "${XRAY_CONFIG_DIR}/config.json" <<'JSON'
+{
+  "inbounds": [
+    {
+      "tag": "tproxy-in",
+      "listen": "0.0.0.0",
+      "port": 9999,
+      "protocol": "socks",
+      "settings": {"customSetting": "kept"},
+      "streamSettings": {"sockopt": {"mark": 7}}
+    },
+    {"tag": "tproxy-in", "listen": "0.0.0.0", "port": 12346}
+  ],
+  "outbounds": [
+    {"tag": "custom-proxy", "protocol": "freedom"}
+  ]
+}
+JSON
+if ensure_xray_tproxy_in >/dev/null && python3 - "${XRAY_CONFIG_DIR}/config.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+items = [x for x in cfg["inbounds"] if x.get("tag") == "tproxy-in"]
+assert len(items) == 1
+item = items[0]
+assert item["listen"] == "127.0.0.1"
+assert item["port"] == 12346
+assert item["protocol"] == "dokodemo-door"
+assert item["settings"]["network"] == "udp"
+assert item["settings"]["followRedirect"] is True
+assert item["settings"]["customSetting"] == "kept"
+assert item["streamSettings"]["sockopt"]["tproxy"] == "tproxy"
+assert item["streamSettings"]["sockopt"]["mark"] == 7
+assert cfg["outbounds"][0]["tag"] == "custom-proxy"
+PY
+then
+  pass "existing Xray config gets safe tproxy-in without losing custom outbounds"
+else
+  fail_msg "ensure_xray_tproxy_in did not normalize existing config"
+fi
+rm -rf "$tproxy_dir"
 
 echo "== is_valid_udp_port =="
 assert_true "46000 valid" is_valid_udp_port 46000
@@ -473,6 +519,14 @@ else
   log_file="${mock_dir}/iptables.log"
   write_exec "${mock_bin}/ip" "$(cat <<'EOF'
 #!/bin/bash
+if [[ "$*" == "-4 rule show" ]]; then
+  echo "10066: from all fwmark 0x66/0xff lookup 166"
+  exit 0
+fi
+if [[ "$*" == "-4 route show table 166" ]]; then
+  echo "local default dev lo scope host"
+  exit 0
+fi
 if [[ "$1" == "link" && "$2" == "show" ]]; then
   case "$3" in
     wdtt0) exit 0 ;;
@@ -487,6 +541,9 @@ EOF
 printf 'iptables' >> "${log_file}"
 for a in "\$@"; do printf ' %s' "\$a" >> "${log_file}"; done
 printf '\n' >> "${log_file}"
+if [[ " \$* " == *" -C XRAY_TPROXY -p udp -j TPROXY "* ]]; then
+  exit 0
+fi
 for a in "\$@"; do
   if [[ "\$a" == "-C" ]]; then
     exit 1
@@ -527,10 +584,55 @@ EOF
   else
     fail_msg "TCP REDIRECT to xray port missing"
   fi
+  if [[ "$log" == *"-t mangle -N XRAY_TPROXY"* &&
+        "$log" == *"-t mangle -A PREROUTING -i wdtt0 -p udp -j XRAY_TPROXY"* &&
+        "$log" == *"-t mangle -A PREROUTING -i wdtt-raw -p udp -j XRAY_TPROXY"* ]]; then
+    pass "inner UDP from wdtt0/wdtt-raw enters XRAY_TPROXY"
+  else
+    fail_msg "missing iface-scoped inner UDP TPROXY jumps"
+  fi
+  if [[ "$log" == *"-j TPROXY --on-port 12346 --on-ip 127.0.0.1 --tproxy-mark 0x66/0xff"* ]]; then
+    pass "WebRTC/game UDP redirects to loopback tproxy-in"
+  else
+    fail_msg "missing UDP TPROXY target/mark"
+  fi
   if [[ "$log" == *"-j DROP"* ]]; then
     fail_msg "must not DROP packets"
   else
     pass "no DROP in xray-rules"
+  fi
+  rm -rf "$mock_dir"
+fi
+
+echo "== xray-rules: TPROXY target failure is loud and adds no inner UDP jump =="
+if [[ -f "$XRAY_RULES" ]]; then
+  mock_dir="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-xray-rules-fail.XXXXXX")"
+  mock_bin="${mock_dir}/bin"
+  mkdir -p "$mock_bin"
+  log_file="${mock_dir}/iptables.log"
+  write_exec "${mock_bin}/ip" $'#!/bin/bash\nexit 0\n'
+  write_exec "${mock_bin}/iptables" "$(cat <<EOF
+#!/bin/bash
+printf 'iptables %s\n' "\$*" >> "${log_file}"
+if [[ " \$* " == *" -j TPROXY "* ]]; then exit 1; fi
+for a in "\$@"; do
+  if [[ "\$a" == "-C" ]]; then exit 1; fi
+done
+exit 0
+EOF
+)"
+  if run_xray_rules_up "$mock_bin" "10.80.0.0/16" >/dev/null 2>&1; then
+    fail_msg "helper must fail when the kernel rejects the TPROXY target"
+  else
+    pass "helper returns non-zero when TPROXY target is unavailable"
+  fi
+  log=""
+  [[ -f "$log_file" ]] && log="$(cat "$log_file")"
+  if [[ "$log" == *"-A PREROUTING -i wdtt0 -p udp -j XRAY_TPROXY"* ||
+        "$log" == *"-A PREROUTING -i wdtt-raw -p udp -j XRAY_TPROXY"* ]]; then
+    fail_msg "failed TPROXY target must not receive live PREROUTING jumps"
+  else
+    pass "no live inner UDP jump is added after TPROXY setup failure"
   fi
   rm -rf "$mock_dir"
 fi

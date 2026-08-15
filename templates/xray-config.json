@@ -32,6 +32,26 @@
       }
     },
     {
+      "tag": "tproxy-in",
+      "listen": "127.0.0.1",
+      "port": 12346,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "network": "udp",
+        "followRedirect": true
+      },
+      "streamSettings": {
+        "sockopt": {
+          "tproxy": "tproxy"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "routeOnly": false,
+        "destOverride": ["quic", "fakedns"]
+      }
+    },
+    {
       "tag": "dns-in",
       "listen": "10.66.66.1",
       "port": 53,

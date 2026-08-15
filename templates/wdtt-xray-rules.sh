@@ -1,13 +1,19 @@
 #!/bin/bash
-# Заворот VPN-трафика в Xray (REDIRECT): wdtt0 (WG) + wdtt-raw (RAW/CSQTT).
+# Заворот VPN-трафика в Xray: TCP NAT REDIRECT + inner UDP TPROXY на wdtt0/wdtt-raw.
 # MTU (MSS + DF-clear): /usr/local/bin/wdtt-mtu-rules.sh — не дублировать здесь.
 # Правила привязаны к имени iface и применяются даже если TUN ещё не поднят
-# (гонка wdtt-xray ExecStartPost vs startRawTUN). TCP-only REDIRECT — без UDP DROP.
+# (гонка wdtt-xray ExecStartPost vs startRawTUN). Без UDP DROP: игры и CSQTT должны жить.
+# Внешний CSQTT приходит с WAN, не -i wdtt-raw — TPROXY его не трогает.
 set +e
 
 WG_IFACE="${WDTT_IFACE:-wdtt0}"
 RAW_IFACE="${WDTT_RAW_IFACE:-wdtt-raw}"
 XPORT="${WDTT_XRAY_PORT:-12345}"
+TPROXY_PORT="${WDTT_TPROXY_PORT:-12346}"
+TPROXY_MARK="${WDTT_TPROXY_MARK:-0x66}"
+TPROXY_MASK="${WDTT_TPROXY_MASK:-0xff}"
+TPROXY_TABLE="${WDTT_TPROXY_TABLE:-166}"
+TPROXY_PRIO="${WDTT_TPROXY_PRIO:-10066}"
 DNS_IP="${WDTT_DNS_IP:-10.66.66.1}"
 WG_NET="${WDTT_TUN_NET:-10.66.66.0/24}"
 RAW_NET="${WDTT_RAW_NET:-10.70.0.0/16}"
@@ -131,6 +137,17 @@ cleanup_iface() {
     while iptables -C INPUT -i "$iface" -m comment --comment WDTT_XRAY -j ACCEPT 2>/dev/null; do
         iptables -D INPUT -i "$iface" -m comment --comment WDTT_XRAY -j ACCEPT 2>/dev/null || break
     done
+    while iptables -t mangle -C PREROUTING -i "$iface" -p udp -j XRAY_TPROXY 2>/dev/null; do
+        iptables -t mangle -D PREROUTING -i "$iface" -p udp -j XRAY_TPROXY 2>/dev/null || break
+    done
+}
+
+cleanup_tproxy_route() {
+    local i
+    for i in 1 2 3 4 5 6 7 8; do
+        ip -4 rule del fwmark "${TPROXY_MARK}/${TPROXY_MASK}" table "$TPROXY_TABLE" priority "$TPROXY_PRIO" 2>/dev/null || break
+    done
+    ip -4 route del local 0.0.0.0/0 dev lo table "$TPROXY_TABLE" 2>/dev/null || true
 }
 
 cleanup() {
@@ -138,6 +155,26 @@ cleanup() {
     cleanup_iface "$RAW_IFACE"
     iptables -t nat -F XRAY_REDIRECT 2>/dev/null
     iptables -t nat -X XRAY_REDIRECT 2>/dev/null
+    iptables -t mangle -F XRAY_TPROXY 2>/dev/null
+    iptables -t mangle -X XRAY_TPROXY 2>/dev/null
+    cleanup_tproxy_route
+}
+
+probe_tproxy_target() {
+    local chain="WDTT_TPROXY_CHECK"
+    iptables -t mangle -F "$chain" 2>/dev/null || true
+    iptables -t mangle -X "$chain" 2>/dev/null || true
+    iptables -t mangle -N "$chain" 2>/dev/null || return 1
+    if ! iptables -t mangle -A "$chain" -p udp -j TPROXY \
+        --on-port "$TPROXY_PORT" --on-ip 127.0.0.1 \
+        --tproxy-mark "${TPROXY_MARK}/${TPROXY_MASK}" 2>/dev/null; then
+        iptables -t mangle -F "$chain" 2>/dev/null || true
+        iptables -t mangle -X "$chain" 2>/dev/null || true
+        return 1
+    fi
+    iptables -t mangle -F "$chain" 2>/dev/null || true
+    iptables -t mangle -X "$chain" 2>/dev/null || true
+    return 0
 }
 
 if [ "${1:-}" = "down" ]; then
@@ -146,9 +183,14 @@ if [ "${1:-}" = "down" ]; then
     exit 0
 fi
 
+if ! probe_tproxy_target; then
+    echo "wdtt-xray rules ERROR: kernel/iptables TPROXY target is unavailable; rules were not changed" >&2
+    exit 1
+fi
+
 cleanup
 
-# Цепочка REDIRECT (общая для обоих TUN). Только TCP; UDP 53 — DNAT, прочий UDP не трогаем.
+# Цепочка REDIRECT (общая для обоих TUN). TCP REDIRECT; UDP 53 — DNAT.
 iptables -t nat -N XRAY_REDIRECT
 iptables -t nat -A XRAY_REDIRECT -d "$WG_NET" -j RETURN
 iptables -t nat -A XRAY_REDIRECT -d "$RAW_NET" -j RETURN
@@ -159,6 +201,43 @@ iptables -t nat -A XRAY_REDIRECT -p tcp --dport "$SUB_PORT" -j RETURN
 iptables -t nat -A XRAY_REDIRECT -m addrtype --dst-type LOCAL -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p udp --dport 53 -j RETURN
 iptables -t nat -A XRAY_REDIRECT -p tcp -j REDIRECT --to-ports "$XPORT"
+
+# Inner UDP TPROXY: только -i wdtt0 / wdtt-raw. WAN/CSQTT снаружи не попадает.
+iptables -t mangle -N XRAY_TPROXY
+iptables -t mangle -A XRAY_TPROXY -p udp --dport 53 -j RETURN
+iptables -t mangle -A XRAY_TPROXY -d "$WG_NET" -j RETURN
+iptables -t mangle -A XRAY_TPROXY -d "$RAW_NET" -j RETURN
+iptables -t mangle -A XRAY_TPROXY -d 127.0.0.0/8 -j RETURN
+iptables -t mangle -A XRAY_TPROXY -m addrtype --dst-type LOCAL -j RETURN
+iptables -t mangle -A XRAY_TPROXY -d 224.0.0.0/4 -j RETURN
+iptables -t mangle -A XRAY_TPROXY -d 255.255.255.255/32 -j RETURN
+if ! iptables -t mangle -A XRAY_TPROXY -p udp -j TPROXY \
+    --on-port "$TPROXY_PORT" --on-ip 127.0.0.1 \
+    --tproxy-mark "${TPROXY_MARK}/${TPROXY_MASK}"; then
+    echo "wdtt-xray rules ERROR: failed to install XRAY_TPROXY target" >&2
+    cleanup
+    exit 1
+fi
+
+if ! ip -4 rule add fwmark "${TPROXY_MARK}/${TPROXY_MASK}" table "$TPROXY_TABLE" priority "$TPROXY_PRIO" 2>/dev/null; then
+    echo "wdtt-xray rules ERROR: failed to install fwmark policy rule" >&2
+    cleanup
+    exit 1
+fi
+if ! ip -4 route replace local 0.0.0.0/0 dev lo table "$TPROXY_TABLE" 2>/dev/null; then
+    echo "wdtt-xray rules ERROR: failed to install local TPROXY route" >&2
+    cleanup
+    exit 1
+fi
+if ! iptables -t mangle -C XRAY_TPROXY -p udp -j TPROXY \
+    --on-port "$TPROXY_PORT" --on-ip 127.0.0.1 \
+    --tproxy-mark "${TPROXY_MARK}/${TPROXY_MASK}" 2>/dev/null ||
+   ! ip -4 rule show | grep -Eq "fwmark ${TPROXY_MARK}/${TPROXY_MASK}.*(lookup|table) ${TPROXY_TABLE}" ||
+   ! ip -4 route show table "$TPROXY_TABLE" | grep -Eq '^local (default|0\.0\.0\.0/0) dev lo([[:space:]]|$)'; then
+    echo "wdtt-xray rules ERROR: TPROXY target or policy route verification failed" >&2
+    cleanup
+    exit 1
+fi
 
 APPLIED=""
 apply_iface() {
@@ -171,6 +250,11 @@ apply_iface() {
         iptables -t nat -I PREROUTING 1 -i "$iface" -p udp --dport 53 -j DNAT --to-destination "${DNS_IP}:53"
     iptables -t nat -C PREROUTING -i "$iface" -j XRAY_REDIRECT 2>/dev/null || \
         iptables -t nat -A PREROUTING -i "$iface" -j XRAY_REDIRECT
+    if ! iptables -t mangle -C PREROUTING -i "$iface" -p udp -j XRAY_TPROXY 2>/dev/null &&
+       ! iptables -t mangle -A PREROUTING -i "$iface" -p udp -j XRAY_TPROXY; then
+        echo "wdtt-xray rules ERROR: failed to attach XRAY_TPROXY to ${iface}" >&2
+        return 1
+    fi
     if [[ -n "$APPLIED" ]]; then
         APPLIED="${APPLIED}+${iface}"
     else
@@ -179,8 +263,13 @@ apply_iface() {
     return 0
 }
 
-apply_iface "$WG_IFACE" || true
-apply_iface "$RAW_IFACE" || true
+APPLY_FAILED=0
+apply_iface "$WG_IFACE" || APPLY_FAILED=1
+apply_iface "$RAW_IFACE" || APPLY_FAILED=1
+if [[ "$APPLY_FAILED" -ne 0 ]]; then
+    cleanup
+    exit 1
+fi
 
 if [[ -x /usr/local/bin/wdtt-mtu-rules.sh ]]; then
     WDTT_RAW_NET="$RAW_NET" /usr/local/bin/wdtt-mtu-rules.sh up
@@ -190,4 +279,4 @@ if [[ -z "$APPLIED" ]]; then
     echo "wdtt-xray rules: no VPN ifaces applied"
     exit 0
 fi
-echo "wdtt-xray rules applied (ifaces:${APPLIED} raw_net:$RAW_NET panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, DNS -> $DNS_IP:53)"
+echo "wdtt-xray rules applied (ifaces:${APPLIED} raw_net:$RAW_NET panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, UDP TPROXY -> :$TPROXY_PORT, DNS -> $DNS_IP:53)"

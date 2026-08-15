@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.5.35"
+INSTALLER_VERSION="1.5.39"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -421,9 +421,9 @@ pkg_install() {
 install_deps() {
   step "Установка зависимостей..."
   case "$PKG_MGR" in
-    apt) pkg_install ca-certificates curl file git iproute2 iptables procps psmisc sqlite3 unzip wget wireguard-tools ;;
-    dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc sqlite unzip wget wireguard-tools ;;
-    pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc sqlite unzip wget wireguard-tools ;;
+    apt) pkg_install ca-certificates curl file git iproute2 iptables procps psmisc python3 sqlite3 unzip wget wireguard-tools ;;
+    dnf|yum) pkg_install ca-certificates curl git iproute iptables procps-ng psmisc python3 sqlite unzip wget wireguard-tools ;;
+    pacman) pkg_install ca-certificates curl git iproute2 iptables procps-ng psmisc python sqlite unzip wget wireguard-tools ;;
   esac
   if command -v tc >/dev/null 2>&1; then
     info "tc (iproute2) — лимиты скорости VPN доступны"
@@ -1345,6 +1345,84 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
+ensure_xray_tproxy_in() {
+  local cfg="${XRAY_CONFIG_DIR}/config.json"
+  local backup="${cfg}.pre-tproxy.bak"
+  local xray_bin="${XRAY_BIN_DIR}/$(xray_bin_filename)"
+  [[ -f "$cfg" ]] || return 0
+  command -v python3 >/dev/null || { warn "python3 не найден — не удалось проверить tproxy-in"; return 1; }
+  python3 - "$cfg" "$backup" <<'PY'
+import json, os, shutil, stat, sys
+
+path = sys.argv[1]
+backup = sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    cfg = json.load(f)
+
+inbounds = cfg.setdefault("inbounds", [])
+if not isinstance(inbounds, list):
+    raise ValueError("Xray inbounds must be an array")
+tproxy = None
+deduped = []
+for inbound in inbounds:
+    if isinstance(inbound, dict) and inbound.get("tag") == "tproxy-in":
+        if tproxy is None:
+            tproxy = inbound
+            deduped.append(inbound)
+        continue
+    deduped.append(inbound)
+if tproxy is None:
+    tproxy = {"tag": "tproxy-in"}
+    deduped.append(tproxy)
+cfg["inbounds"] = deduped
+
+tproxy.update({
+    "listen": "127.0.0.1",
+    "port": 12346,
+    "protocol": "dokodemo-door",
+})
+settings = tproxy.get("settings")
+if not isinstance(settings, dict):
+    settings = {}
+    tproxy["settings"] = settings
+settings["network"] = "udp"
+settings["followRedirect"] = True
+stream = tproxy.get("streamSettings")
+if not isinstance(stream, dict):
+    stream = {}
+    tproxy["streamSettings"] = stream
+sockopt = stream.get("sockopt")
+if not isinstance(sockopt, dict):
+    sockopt = {}
+    stream["sockopt"] = sockopt
+sockopt["tproxy"] = "tproxy"
+sniffing = tproxy.get("sniffing")
+if not isinstance(sniffing, dict):
+    sniffing = {}
+    tproxy["sniffing"] = sniffing
+sniffing["enabled"] = True
+sniffing["routeOnly"] = False
+sniffing.setdefault("destOverride", ["quic", "fakedns"])
+
+mode = stat.S_IMODE(os.stat(path).st_mode)
+tmp = path + ".tmp"
+shutil.copy2(path, backup)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+os.chmod(tmp, mode)
+os.replace(tmp, path)
+PY
+  if [[ -x "$xray_bin" ]] && ! "$xray_bin" run -test -c "$cfg" >/dev/null 2>&1; then
+    warn "Xray отклонил tproxy-in — восстанавливаю предыдущий config.json"
+    mv -f "$backup" "$cfg"
+    return 1
+  fi
+  rm -f "$backup"
+  info "Xray: inner UDP tproxy-in :12346 настроен"
+}
+
 # ExecStartPost/StopPost for wdtt.service. --direct omits xray-rules even if leftover helper exists.
 wdtt_service_routing_posts() {
   local wait_loop
@@ -1442,6 +1520,7 @@ install_xray_config() {
     install -m 0644 "${TEMPLATES_DIR}/xray-config.json" "${XRAY_CONFIG_DIR}/config.json"
   fi
   fix_xray_dns_if_needed
+  ensure_xray_tproxy_in
   mkdir -p "${XRAY_LOG_DIR}"
   touch "${XRAY_LOG_DIR}/access.log" "${XRAY_LOG_DIR}/error.log"
   chmod 644 "${XRAY_LOG_DIR}/access.log" "${XRAY_LOG_DIR}/error.log" 2>/dev/null || true
@@ -1497,7 +1576,11 @@ start_services() {
     sleep 1
   done
   if [[ "$WITH_XRAY" == "1" ]]; then
-    systemctl restart wdtt-xray.service || warn "wdtt-xray не запустился — настройте outbound в панели"
+    if ! systemctl restart wdtt-xray.service; then
+      err "wdtt-xray не запустился; UDP TPROXY не подтверждён"
+      journalctl -u wdtt-xray -n 30 --no-pager >&2 || true
+      exit 1
+    fi
   fi
 }
 
@@ -1611,18 +1694,14 @@ cmd_update() {
     if [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
       step "Обновление правил xray..."
       install_xray_rules_script
-      normalize_raw_subnet
-      WDTT_RAW_NET="${RAW_SUBNET}" /usr/local/bin/wdtt-xray-rules.sh up 2>/dev/null || true
-      info "Правила xray обновлены"
+      info "Скрипт правил xray обновлён; правила применятся после проверки конфига при перезапуске"
     else
       apply_mtu_rules
     fi
     if [[ ! -x "${XRAY_BIN_DIR}/$(xray_bin_filename)" ]]; then
       install_xray_binary
-      install_xray_config
-    else
-      fix_xray_dns_if_needed
     fi
+    install_xray_config
     install_xray_rules
   else
     teardown_xray_routing_leftovers
