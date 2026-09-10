@@ -120,6 +120,20 @@ else
   fail_msg "xray ExecStartPost must apply rules immediately (no sleep 1 / seq 1 40 wdtt-raw wait)"
 fi
 
+echo "== contract: missing xray helper cannot kill Xray =="
+if awk '
+  /^install_xray_rules\(\)/ {inside=1}
+  inside && /^}/ {exit}
+  inside && /ExecStartPost=.*if \[ -x \/usr\/local\/bin\/wdtt-xray-rules\.sh \]/ {guard=1}
+  inside && /ExecStartPost=.*\/usr\/bin\/install -m 0755 \/usr\/local\/wdtt\/templates\/wdtt-xray-rules\.sh \/usr\/local\/bin\/wdtt-xray-rules\.sh/ {recover=1}
+  inside && /Xray stays running without WDTT redirect rules/ {warning=1}
+  END {exit (guard && recover && warning)?0:1}
+' "$INSTALL"; then
+  pass "xray unit guards missing helper instead of entering restart loop"
+else
+  fail_msg "xray unit must not fail ExecStartPost when helper is missing"
+fi
+
 echo "== contract: cmd_update refreshes helper and units =="
 if awk '
   /^cmd_update\(\)/ {inside=1}

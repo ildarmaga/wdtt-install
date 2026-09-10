@@ -1541,8 +1541,8 @@ Type=simple
 Environment=XRAY_LOCATION_ASSET=${XRAY_BIN_DIR}
 ExecStartPre=/usr/bin/env bash -c 'for i in \$(seq 1 30); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && exit 0; sleep 0.5; done; exit 1'
 ExecStart=${XRAY_BIN_DIR}/$(xray_bin_filename) run -c ${XRAY_CONFIG_DIR}/config.json
-ExecStartPost=/usr/local/bin/wdtt-xray-rules.sh up
-ExecStopPost=-/usr/local/bin/wdtt-xray-rules.sh down
+ExecStartPost=/usr/bin/env bash -c 'if [ ! -x /usr/local/bin/wdtt-xray-rules.sh ] && [ -f /usr/local/wdtt/templates/wdtt-xray-rules.sh ]; then /usr/bin/install -m 0755 /usr/local/wdtt/templates/wdtt-xray-rules.sh /usr/local/bin/wdtt-xray-rules.sh; fi; if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then exec /usr/local/bin/wdtt-xray-rules.sh up; else echo "wdtt-xray: missing /usr/local/bin/wdtt-xray-rules.sh and recovery template; Xray stays running without WDTT redirect rules" >&2; exit 0; fi'
+ExecStopPost=-/usr/bin/env bash -c 'if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then exec /usr/local/bin/wdtt-xray-rules.sh down; fi'
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
