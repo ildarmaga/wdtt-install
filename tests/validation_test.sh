@@ -127,27 +127,29 @@ if awk '
   inside && /ExecStartPost=.*if \[ -x \/usr\/local\/bin\/wdtt-xray-rules\.sh \]/ {guard=1}
   inside && /ExecStartPost=.*\/usr\/bin\/install -m 0755 \/usr\/local\/wdtt\/templates\/wdtt-xray-rules\.sh \/usr\/local\/bin\/wdtt-xray-rules\.sh/ {recover=1}
   inside && /Xray stays running without WDTT redirect rules/ {warning=1}
-  END {exit (guard && recover && warning)?0:1}
+  inside && /if \[ ! -x \/usr\/local\/bin\/wdtt-xray-rules\.sh \] && \[ -f \/usr\/local\/wdtt\/templates\/wdtt-xray-rules\.sh \]/ {stale=1}
+  END {exit (guard && recover && warning && !stale)?0:1}
 ' "$INSTALL"; then
-  pass "xray unit guards missing helper instead of entering restart loop"
+  pass "xray unit refreshes helper from template instead of keeping a stale binary"
 else
-  fail_msg "xray unit must not fail ExecStartPost when helper is missing"
+  fail_msg "xray unit must overwrite an old helper from /usr/local/wdtt/templates on every start"
 fi
 
 echo "== contract: cmd_update refreshes helper and units =="
 if awk '
   /^cmd_update\(\)/ {inside=1}
   inside && /^}/ {exit}
+  inside && /ensure_install_tree/ && !helper {tree_first=1}
   inside && /install_xray_rules_script|install -m 0755 .*wdtt-xray-rules\.sh/ {helper=1}
   inside && /install_xray_config/ {config=1}
   inside && /install_xray_rules$/ {xray=1}
   inside && /install_wdtt_service/ {unit=1}
   inside && /WDTT_RAW_NET=.*wdtt-xray-rules\.sh up/ {early_up=1}
-  END {exit (helper && config && xray && unit && !early_up)?0:1}
+  END {exit (tree_first && helper && config && xray && unit && !early_up)?0:1}
 ' "$INSTALL"; then
-  pass "cmd_update patches config before service-managed rules and refreshes both units"
+  pass "cmd_update refreshes install templates before helper/units"
 else
-  fail_msg "cmd_update must patch config, refresh helper/units, and avoid applying TPROXY before config"
+  fail_msg "cmd_update must refresh templates first, then helper/units, and avoid applying TPROXY before config"
 fi
 
 echo "== contract: cmd_update xray helper only when WITH_XRAY=1 =="
@@ -776,6 +778,38 @@ if [[ -f "$XRAY_RULES" ]]; then
   else
     fail_msg "10.80.0.0/29 must be accepted"
   fi
+fi
+
+echo "== ensure_install_tree refreshes stale xray-rules template =="
+if ! declare -F ensure_install_tree >/dev/null; then
+  fail_msg "ensure_install_tree missing"
+else
+  tree_dir="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-install-tree.XXXXXX")"
+  old_install_dir="${INSTALL_DIR}"
+  old_templates_dir="${TEMPLATES_DIR}"
+  old_build_dir="${BUILD_DIR}"
+  INSTALL_DIR="$tree_dir"
+  TEMPLATES_DIR="${tree_dir}/templates"
+  BUILD_DIR="${tree_dir}/src"
+  mkdir -p "$TEMPLATES_DIR"
+  printf '%s\n' '{}' > "${TEMPLATES_DIR}/xray-config.json"
+  printf '%s\n' '#!/bin/bash' > "${TEMPLATES_DIR}/wdtt.sh"
+  cat > "${TEMPLATES_DIR}/wdtt-xray-rules.sh" <<'EOF'
+#!/bin/bash
+IFACE="wdtt0"
+echo "wdtt-xray rules applied (panel:$PANEL_PORT sub:$SUB_PORT TCP -> :$XPORT, DNS -> $DNS_IP:53)"
+EOF
+  if ensure_install_tree >/dev/null 2>&1 \
+    && grep -q 'UDP TPROXY' "${TEMPLATES_DIR}/wdtt-xray-rules.sh" \
+    && ! grep -q '^IFACE="wdtt0"$' "${TEMPLATES_DIR}/wdtt-xray-rules.sh"; then
+    pass "stale wdtt0-only helper is replaced from packaged templates"
+  else
+    fail_msg "ensure_install_tree must overwrite a pre-TPROXY wdtt-xray-rules.sh"
+  fi
+  INSTALL_DIR="$old_install_dir"
+  TEMPLATES_DIR="$old_templates_dir"
+  BUILD_DIR="$old_build_dir"
+  rm -rf "$tree_dir"
 fi
 
 if [[ "$fail" -ne 0 ]]; then

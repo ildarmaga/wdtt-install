@@ -6,7 +6,7 @@
 #   bash install.sh install -p YOUR_PASSWORD   # свой пароль (опционально)
 set -euo pipefail
 
-INSTALLER_VERSION="1.5.61"
+INSTALLER_VERSION="1.5.62"
 # Не перезаписывать при . /etc/os-release
 readonly INSTALLER_VERSION
 LOG_FILE="/var/log/wdtt-install.log"
@@ -465,18 +465,35 @@ is_piped_install() {
 TEMPLATES_DIR="${INSTALL_DIR}/templates"
 
 ensure_install_tree() {
-  mkdir -p "$INSTALL_DIR" "$BUILD_DIR"
-  if [[ -f "${TEMPLATES_DIR}/xray-config.json" && -f "${TEMPLATES_DIR}/wdtt.sh" ]]; then
-    return 0
-  fi
+  mkdir -p "$INSTALL_DIR" "${INSTALL_DIR}/src"
+  local templates="${INSTALL_DIR}/templates"
+  local src_dir=""
+  local cloned=""
   if is_piped_install; then
-    step "Загрузка wdtt-install (шаблоны)..."
-    clone_or_update "$REPO_INSTALL" "$INSTALL_DIR" ""
+    cloned="$(mktemp -d /tmp/wdtt-install-templates.XXXXXX)"
+    if clone_or_update "$REPO_INSTALL" "$cloned" ""; then
+      src_dir="$cloned"
+    else
+      rm -rf "$cloned"
+    fi
   else
-    local dir; dir="$(script_dir)"
-    cp -a "${dir}/." "$INSTALL_DIR/"
+    src_dir="$(script_dir)"
+    [[ -f "${src_dir}/templates/wdtt-xray-rules.sh" ]] || src_dir=""
   fi
-  [[ -f "${TEMPLATES_DIR}/xray-config.json" ]] || { err "Шаблоны не найдены в ${TEMPLATES_DIR}"; exit 1; }
+  if [[ -n "$src_dir" && -f "${src_dir}/templates/wdtt-xray-rules.sh" ]]; then
+    mkdir -p "$templates"
+    cp -a "${src_dir}/templates/." "$templates/"
+    if [[ -f "${src_dir}/install.sh" && "$src_dir" != "$INSTALL_DIR" ]]; then
+      install -m 0755 "${src_dir}/install.sh" "${INSTALL_DIR}/install.sh"
+    fi
+  elif [[ ! -f "${templates}/xray-config.json" || ! -f "${templates}/wdtt.sh" ]]; then
+    err "Шаблоны не найдены в ${templates}"
+    exit 1
+  fi
+  if [[ -n "$cloned" ]]; then
+    rm -rf "$cloned"
+  fi
+  TEMPLATES_DIR="$templates"
 }
 
 detect_wan() {
@@ -652,8 +669,23 @@ install_mtu_rules_script() {
 }
 
 install_xray_rules_script() {
-  [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]] || return 0
-  install -m 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh" /usr/local/bin/wdtt-xray-rules.sh
+  local src=""
+  local packaged
+  packaged="$(script_dir)/templates/wdtt-xray-rules.sh"
+  if [[ -f "$packaged" ]]; then
+    src="$packaged"
+  elif [[ -f "${TEMPLATES_DIR}/wdtt-xray-rules.sh" ]]; then
+    src="${TEMPLATES_DIR}/wdtt-xray-rules.sh"
+  else
+    return 0
+  fi
+  if grep -q '^IFACE="wdtt0"$' "$src" && ! grep -q 'RAW_IFACE=' "$src"; then
+    err "отказ: старый wdtt-xray-rules.sh без wdtt-raw/TPROXY"
+    return 1
+  fi
+  mkdir -p "${INSTALL_DIR}/templates"
+  install -m 0755 "$src" /usr/local/bin/wdtt-xray-rules.sh
+  install -m 0755 "$src" "${INSTALL_DIR}/templates/wdtt-xray-rules.sh"
 }
 
 # xray→--direct: flush REDIRECT, stop leftover unit, remove helper so startRawTUN cannot re-apply.
@@ -1541,7 +1573,7 @@ Type=simple
 Environment=XRAY_LOCATION_ASSET=${XRAY_BIN_DIR}
 ExecStartPre=/usr/bin/env bash -c 'for i in \$(seq 1 30); do ip addr show ${IFACE} 2>/dev/null | grep -q "10.66.66.1" && exit 0; sleep 0.5; done; exit 1'
 ExecStart=${XRAY_BIN_DIR}/$(xray_bin_filename) run -c ${XRAY_CONFIG_DIR}/config.json
-ExecStartPost=/usr/bin/env bash -c 'if [ ! -x /usr/local/bin/wdtt-xray-rules.sh ] && [ -f /usr/local/wdtt/templates/wdtt-xray-rules.sh ]; then /usr/bin/install -m 0755 /usr/local/wdtt/templates/wdtt-xray-rules.sh /usr/local/bin/wdtt-xray-rules.sh; fi; if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then exec /usr/local/bin/wdtt-xray-rules.sh up; else echo "wdtt-xray: missing /usr/local/bin/wdtt-xray-rules.sh and recovery template; Xray stays running without WDTT redirect rules" >&2; exit 0; fi'
+ExecStartPost=/usr/bin/env bash -c 'if [ -f /usr/local/wdtt/templates/wdtt-xray-rules.sh ]; then /usr/bin/install -m 0755 /usr/local/wdtt/templates/wdtt-xray-rules.sh /usr/local/bin/wdtt-xray-rules.sh; fi; if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then exec /usr/local/bin/wdtt-xray-rules.sh up; else echo "wdtt-xray: missing /usr/local/bin/wdtt-xray-rules.sh and recovery template; Xray stays running without WDTT redirect rules" >&2; exit 0; fi'
 ExecStopPost=-/usr/bin/env bash -c 'if [ -x /usr/local/bin/wdtt-xray-rules.sh ]; then exec /usr/local/bin/wdtt-xray-rules.sh down; fi'
 Restart=always
 RestartSec=5
@@ -1688,6 +1720,10 @@ cmd_update() {
 
   # Update path must open CSQTT/RAW/DTLS/WG the same as fresh install (UFW/DROP hosts).
   setup_firewall || warn "firewall update skipped"
+
+  # Refresh /usr/local/wdtt/templates from this installer checkout before copying helpers.
+  # Otherwise a leftover pre-TPROXY wdtt-xray-rules.sh survives every `wdtt update`.
+  ensure_install_tree
 
   install_mtu_rules_script
   if [[ "$WITH_XRAY" == "1" ]]; then
