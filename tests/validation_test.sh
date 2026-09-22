@@ -415,6 +415,11 @@ else
 
   unit_dir="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-unit.XXXXXX")"
   WDTT_SYSTEMD_DIR="$unit_dir"
+  orig_install_xray_rules_script="$(declare -f install_xray_rules_script)"
+  orig_install_mtu_rules_script="$(declare -f install_mtu_rules_script)"
+  orig_disable_legacy_panel_service="$(declare -f disable_legacy_panel_service)"
+  orig_write_install_inbound_env="$(declare -f write_install_inbound_env)"
+  orig_info="$(declare -f info)"
   install_xray_rules_script() { XRAY_HELPER_INSTALLED=1; }
   install_mtu_rules_script() { :; }
   disable_legacy_panel_service() { :; }
@@ -460,6 +465,12 @@ else
   fi
   rm -rf "$unit_dir"
   unset WDTT_SYSTEMD_DIR
+  unset -f install_xray_rules_script install_mtu_rules_script disable_legacy_panel_service write_install_inbound_env info systemctl
+  eval "$orig_install_xray_rules_script"
+  eval "$orig_install_mtu_rules_script"
+  eval "$orig_disable_legacy_panel_service"
+  eval "$orig_write_install_inbound_env"
+  eval "$orig_info"
 fi
 
 echo "== teardown_xray_routing_leftovers: xray→direct upgrade =="
@@ -778,6 +789,132 @@ if [[ -f "$XRAY_RULES" ]]; then
   else
     fail_msg "10.80.0.0/29 must be accepted"
   fi
+fi
+
+echo "== install_xray_rules_script: same-file template copy (issue #51) =="
+if ! declare -F install_xray_rules_script >/dev/null; then
+  fail_msg "install_xray_rules_script missing"
+else
+  issue51_dir="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-issue51.XXXXXX")"
+  old_install_dir="${INSTALL_DIR}"
+  old_templates_dir="${TEMPLATES_DIR}"
+  old_rules_bin="${WDTT_XRAY_RULES_BIN:-}"
+  old_script_dir="${WDTT_SCRIPT_DIR:-}"
+  INSTALL_DIR="$issue51_dir"
+  TEMPLATES_DIR="${issue51_dir}/templates"
+  WDTT_XRAY_RULES_BIN="${issue51_dir}/bin/wdtt-xray-rules.sh"
+  WDTT_SCRIPT_DIR="$INSTALL_DIR"
+  mkdir -p "$TEMPLATES_DIR" "${issue51_dir}/bin"
+  cat > "${TEMPLATES_DIR}/wdtt-xray-rules.sh" <<'EOF'
+#!/bin/bash
+RAW_IFACE="wdtt-raw"
+echo "helper"
+EOF
+  chmod 0755 "${TEMPLATES_DIR}/wdtt-xray-rules.sh"
+  if issue51_err="$(install_xray_rules_script 2>&1)"; then
+    if [[ -x "$WDTT_XRAY_RULES_BIN" ]] && grep -q 'RAW_IFACE=' "${TEMPLATES_DIR}/wdtt-xray-rules.sh"; then
+      pass "piped/update does not abort when template src is already INSTALL_DIR/templates"
+    else
+      fail_msg "issue #51: helper binary or template missing after same-file copy"
+    fi
+  else
+    fail_msg "issue #51: install aborted on same-file template copy: ${issue51_err}"
+  fi
+  INSTALL_DIR="$old_install_dir"
+  TEMPLATES_DIR="$old_templates_dir"
+  if [[ -n "$old_rules_bin" ]]; then
+    WDTT_XRAY_RULES_BIN="$old_rules_bin"
+  else
+    unset WDTT_XRAY_RULES_BIN
+  fi
+  if [[ -n "$old_script_dir" ]]; then
+    WDTT_SCRIPT_DIR="$old_script_dir"
+  else
+    unset WDTT_SCRIPT_DIR
+  fi
+  rm -rf "$issue51_dir"
+fi
+
+echo "== install_xray_rules_script: packaged src still refreshes template =="
+if declare -F install_xray_rules_script >/dev/null; then
+  issue51_pkg="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-issue51-pkg.XXXXXX")"
+  old_install_dir="${INSTALL_DIR}"
+  old_templates_dir="${TEMPLATES_DIR}"
+  old_rules_bin="${WDTT_XRAY_RULES_BIN:-}"
+  old_script_dir="${WDTT_SCRIPT_DIR:-}"
+  INSTALL_DIR="${issue51_pkg}/dest"
+  TEMPLATES_DIR="${INSTALL_DIR}/templates"
+  WDTT_XRAY_RULES_BIN="${INSTALL_DIR}/bin/wdtt-xray-rules.sh"
+  WDTT_SCRIPT_DIR="${issue51_pkg}/src"
+  mkdir -p "$TEMPLATES_DIR" "${INSTALL_DIR}/bin" "${issue51_pkg}/src/templates"
+  cat > "${TEMPLATES_DIR}/wdtt-xray-rules.sh" <<'EOF'
+#!/bin/bash
+IFACE="wdtt0"
+echo stale
+EOF
+  cat > "${issue51_pkg}/src/templates/wdtt-xray-rules.sh" <<'EOF'
+#!/bin/bash
+RAW_IFACE="wdtt-raw"
+echo fresh
+EOF
+  if install_xray_rules_script >/dev/null 2>&1 \
+    && grep -q 'RAW_IFACE=' "${TEMPLATES_DIR}/wdtt-xray-rules.sh" \
+    && grep -q 'fresh' "$WDTT_XRAY_RULES_BIN"; then
+    pass "packaged helper still overwrites a stale INSTALL_DIR template"
+  else
+    fail_msg "packaged src must refresh INSTALL_DIR/templates and the helper binary"
+  fi
+  INSTALL_DIR="$old_install_dir"
+  TEMPLATES_DIR="$old_templates_dir"
+  if [[ -n "$old_rules_bin" ]]; then
+    WDTT_XRAY_RULES_BIN="$old_rules_bin"
+  else
+    unset WDTT_XRAY_RULES_BIN
+  fi
+  if [[ -n "$old_script_dir" ]]; then
+    WDTT_SCRIPT_DIR="$old_script_dir"
+  else
+    unset WDTT_SCRIPT_DIR
+  fi
+  rm -rf "$issue51_pkg"
+fi
+
+echo "== ensure_install_tree: src_dir is already INSTALL_DIR (issue #51) =="
+if ! declare -F ensure_install_tree >/dev/null; then
+  fail_msg "ensure_install_tree missing"
+else
+  tree51="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-issue51-tree.XXXXXX")"
+  old_install_dir="${INSTALL_DIR}"
+  old_templates_dir="${TEMPLATES_DIR}"
+  old_build_dir="${BUILD_DIR}"
+  old_script_dir="${WDTT_SCRIPT_DIR:-}"
+  INSTALL_DIR="$tree51"
+  TEMPLATES_DIR="${tree51}/templates"
+  BUILD_DIR="${tree51}/src"
+  WDTT_SCRIPT_DIR="$INSTALL_DIR"
+  mkdir -p "$TEMPLATES_DIR"
+  printf '%s\n' '{}' > "${TEMPLATES_DIR}/xray-config.json"
+  printf '%s\n' '#!/bin/bash' > "${TEMPLATES_DIR}/wdtt.sh"
+  cat > "${TEMPLATES_DIR}/wdtt-xray-rules.sh" <<'EOF'
+#!/bin/bash
+RAW_IFACE="wdtt-raw"
+echo already-local
+EOF
+  if ensure_install_tree >/dev/null 2>&1 \
+    && grep -q 'already-local' "${TEMPLATES_DIR}/wdtt-xray-rules.sh"; then
+    pass "ensure_install_tree is a no-op when templates already live in INSTALL_DIR"
+  else
+    fail_msg "ensure_install_tree must not fail when copying templates onto themselves"
+  fi
+  INSTALL_DIR="$old_install_dir"
+  TEMPLATES_DIR="$old_templates_dir"
+  BUILD_DIR="$old_build_dir"
+  if [[ -n "$old_script_dir" ]]; then
+    WDTT_SCRIPT_DIR="$old_script_dir"
+  else
+    unset WDTT_SCRIPT_DIR
+  fi
+  rm -rf "$tree51"
 fi
 
 echo "== ensure_install_tree refreshes stale xray-rules template =="

@@ -439,6 +439,10 @@ install_deps() {
 }
 
 script_dir() {
+  if [[ -n "${WDTT_SCRIPT_DIR:-}" ]]; then
+    printf '%s\n' "$WDTT_SCRIPT_DIR"
+    return 0
+  fi
   local src="${BASH_SOURCE[0]}"
   case "$src" in
     /dev/fd/*|/proc/*/fd/*)
@@ -464,6 +468,30 @@ is_piped_install() {
 
 TEMPLATES_DIR="${INSTALL_DIR}/templates"
 
+# GNU install/cp abort when src and dest are the same inode.
+# curl|bash / wdtt update: script_dir is INSTALL_DIR after templates are already copied (issue #51).
+install_file_unless_same() {
+  local src="$1"
+  local dest="$2"
+  local mode="${3:-0755}"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -e "$src" && -e "$dest" && "$src" -ef "$dest" ]]; then
+    chmod "$mode" "$dest" 2>/dev/null || true
+    return 0
+  fi
+  install -m "$mode" "$src" "$dest"
+}
+
+copy_tree_unless_same() {
+  local src="$1"
+  local dest="$2"
+  mkdir -p "$dest"
+  if [[ -d "$src" && -d "$dest" && "$src" -ef "$dest" ]]; then
+    return 0
+  fi
+  cp -a "${src}/." "$dest/"
+}
+
 ensure_install_tree() {
   mkdir -p "$INSTALL_DIR" "${INSTALL_DIR}/src"
   local templates="${INSTALL_DIR}/templates"
@@ -481,10 +509,9 @@ ensure_install_tree() {
     [[ -f "${src_dir}/templates/wdtt-xray-rules.sh" ]] || src_dir=""
   fi
   if [[ -n "$src_dir" && -f "${src_dir}/templates/wdtt-xray-rules.sh" ]]; then
-    mkdir -p "$templates"
-    cp -a "${src_dir}/templates/." "$templates/"
+    copy_tree_unless_same "${src_dir}/templates" "$templates"
     if [[ -f "${src_dir}/install.sh" && "$src_dir" != "$INSTALL_DIR" ]]; then
-      install -m 0755 "${src_dir}/install.sh" "${INSTALL_DIR}/install.sh"
+      install_file_unless_same "${src_dir}/install.sh" "${INSTALL_DIR}/install.sh" 0755
     fi
   elif [[ ! -f "${templates}/xray-config.json" || ! -f "${templates}/wdtt.sh" ]]; then
     err "Шаблоны не найдены в ${templates}"
@@ -671,6 +698,8 @@ install_mtu_rules_script() {
 install_xray_rules_script() {
   local src=""
   local packaged
+  local helper="${WDTT_XRAY_RULES_BIN:-/usr/local/bin/wdtt-xray-rules.sh}"
+  local dest="${INSTALL_DIR}/templates/wdtt-xray-rules.sh"
   packaged="$(script_dir)/templates/wdtt-xray-rules.sh"
   if [[ -f "$packaged" ]]; then
     src="$packaged"
@@ -684,8 +713,8 @@ install_xray_rules_script() {
     return 1
   fi
   mkdir -p "${INSTALL_DIR}/templates"
-  install -m 0755 "$src" /usr/local/bin/wdtt-xray-rules.sh
-  install -m 0755 "$src" "${INSTALL_DIR}/templates/wdtt-xray-rules.sh"
+  install_file_unless_same "$src" "$helper" 0755
+  install_file_unless_same "$src" "$dest" 0755
 }
 
 # xray→--direct: flush REDIRECT, stop leftover unit, remove helper so startRawTUN cannot re-apply.
